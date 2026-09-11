@@ -1,0 +1,15 @@
+from fastapi import FastAPI
+
+from signalforge.api.health import router as health_router
+from signalforge.core.config import get_settings
+
+
+def create_app() -> FastAPI:
+    """Create and configure the SignalForge API application."""
+    settings = get_settings()
+    application = FastAPI(title=settings.app_name)
+    application.include_router(health_router)
+    return application
+
+
+app = create_app()
