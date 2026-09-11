@@ -1,0 +1,54 @@
+[project]
+name = "signalforge"
+version = "0.1.0"
+description = "Backend foundation for the SignalForge incident automation platform"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "alembic>=1.16,<2",
+    "asyncpg>=0.30,<1",
+    "fastapi>=0.141,<1",
+    "pydantic>=2.11,<3",
+    "pydantic-settings>=2.10,<3",
+    "sqlalchemy[asyncio]>=2.0.52,<2.1",
+    "uvicorn>=0.35,<1",
+]
+
+[dependency-groups]
+dev = [
+    "anyio>=4.9,<5",
+    "httpx>=0.28,<1",
+    "mypy>=1.17,<2",
+    "pytest>=8.4,<10",
+    "ruff>=0.12,<1",
+]
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/signalforge"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "integration: requires a reachable PostgreSQL database",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+pretty = true
+files = ["src"]

@@ -1,0 +1,71 @@
+name: Backend CI
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+      - ".python-version"
+      - ".env.example"
+      - "compose.yaml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+      - ".python-version"
+      - ".env.example"
+      - "compose.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: signalforge
+          POSTGRES_USER: signalforge
+          POSTGRES_PASSWORD: signalforge-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signalforge -d signalforge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SIGNALFORGE_APP_ENVIRONMENT: test
+      SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://signalforge:signalforge-ci@localhost:5432/signalforge
+      UV_LOCKED: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.12.13"
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy src
+
+      - name: Test
+        run: uv run pytest
