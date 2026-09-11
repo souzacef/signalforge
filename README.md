@@ -1,8 +1,8 @@
 # SignalForge
 
 SignalForge is a portfolio project for exploring incident automation and
-AI-assisted operations. It is currently in **Phase 1: backend foundation** and
-contains only a small Python API backed by PostgreSQL.
+AI-assisted operations. Its current backend increment can persist, create, and
+retrieve incidents through a small Python API backed by PostgreSQL.
 
 The application begins as a modular monolith. This keeps deployment and local
 development straightforward while domain boundaries are still emerging, without
@@ -55,18 +55,37 @@ The API exposes:
 - `GET /health/live` — process liveness only; it never checks PostgreSQL.
 - `GET /health/ready` — returns `200` when PostgreSQL answers a minimal query,
   otherwise `503` without exposing connection details.
+- `POST /api/v1/incidents` — creates an incident with initial status `open`.
+- `GET /api/v1/incidents/{incident_id}` — retrieves an incident by UUID.
 
 Interactive API documentation is available at <http://127.0.0.1:8000/docs>.
 
+Create an incident:
+
+```sh
+curl -X POST http://127.0.0.1:8000/api/v1/incidents \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "source": "manual",
+    "title": "Checkout API error rate increased",
+    "description": "5xx error rate exceeded threshold",
+    "severity": "high",
+    "occurred_at": "2026-09-11T18:30:00Z"
+  }'
+```
+
 ## Database migrations
 
-Alembic is configured for the application's async SQLAlchemy metadata. There
-are no migrations yet because Phase 1 intentionally defines no domain tables.
-
-Run pending migrations or create the first future revision from `backend/`:
+Alembic manages the PostgreSQL schema. Apply migrations from `backend/` before
+starting the API or running the full test suite:
 
 ```sh
 uv run alembic upgrade head
+```
+
+Create future revisions after changing model metadata:
+
+```sh
 uv run alembic revision --autogenerate -m "describe the change"
 ```
 

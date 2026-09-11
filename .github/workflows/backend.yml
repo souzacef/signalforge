@@ -67,5 +67,8 @@ jobs:
       - name: Type check
         run: uv run mypy src
 
+      - name: Apply database migrations
+        run: uv run alembic upgrade head
+
       - name: Test
         run: uv run pytest

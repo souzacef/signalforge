@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from signalforge.core.config import get_settings
 from signalforge.db.base import Base
 
+# Import model modules so their tables are registered with the shared metadata.
+from signalforge.incidents import models as incident_models  # noqa: F401
+
 config = context.config
 
 if config.config_file_name is not None:
