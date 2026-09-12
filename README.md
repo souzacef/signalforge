@@ -59,8 +59,10 @@ The API exposes:
 - `GET /health/live` — process liveness only; it never checks PostgreSQL.
 - `GET /health/ready` — returns `200` when PostgreSQL answers a minimal query,
   otherwise `503` without exposing connection details.
-- `POST /api/v1/incidents` — creates an incident with initial status `open`.
-- `GET /api/v1/incidents/{incident_id}` — retrieves an incident by UUID.
+- `POST /api/v1/incidents` — creates an incident with initial status `open`;
+  requires an `operator` or `admin` bearer token.
+- `GET /api/v1/incidents/{incident_id}` — retrieves an incident by UUID;
+  requires a `viewer`, `operator`, or `admin` bearer token.
 - `POST /api/v1/auth/token` — authenticates an email and password.
 - `GET /api/v1/auth/me` — returns the authenticated user.
 
@@ -70,6 +72,7 @@ Create an incident:
 
 ```sh
 curl -X POST http://127.0.0.1:8000/api/v1/incidents \
+  -H 'Authorization: Bearer your-access-token' \
   -H 'Content-Type: application/json' \
   -d '{
     "source": "manual",
@@ -114,9 +117,23 @@ curl http://127.0.0.1:8000/api/v1/auth/me \
   -H 'Authorization: Bearer your-access-token'
 ```
 
-Users store one of the `viewer`, `operator`, or `admin` roles, but RBAC is
-not enforced yet. Role enforcement is planned for the next increment, and the
-Incident endpoints remain intentionally unprotected in this commit.
+Incident endpoints require authentication and enforce these explicit role
+permissions:
+
+| Role | Read incidents | Create incidents |
+| --- | --- | --- |
+| `viewer` | Yes | No |
+| `operator` | Yes | Yes |
+| `admin` | Yes | Yes |
+
+Access tokens do not contain role claims. Each authenticated request loads the
+current User from PostgreSQL, so role and active-state changes apply without
+waiting for the token to expire. A missing or invalid bearer token is an
+authentication failure (`401` with `WWW-Authenticate: Bearer`); an authenticated
+user without an allowed role receives `403`.
+
+Incident lifecycle actions and broader administrator management are not
+implemented yet.
 
 ## Database migrations
 
