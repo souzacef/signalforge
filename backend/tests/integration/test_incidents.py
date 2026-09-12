@@ -26,8 +26,13 @@ async def test_create_incident_persists_open_incident(
     client: AsyncClient,
     database_session_factory: async_sessionmaker[AsyncSession],
     incident_payload: dict[str, Any],
+    operator_headers: dict[str, str],
 ) -> None:
-    response = await client.post("/api/v1/incidents", json=incident_payload)
+    response = await client.post(
+        "/api/v1/incidents",
+        json=incident_payload,
+        headers=operator_headers,
+    )
 
     assert response.status_code == 201
     body = response.json()
@@ -55,10 +60,15 @@ async def test_create_incident_rejects_invalid_severity(
     client: AsyncClient,
     database_session_factory: async_sessionmaker[AsyncSession],
     incident_payload: dict[str, Any],
+    operator_headers: dict[str, str],
 ) -> None:
     incident_payload["severity"] = "urgent"
 
-    response = await client.post("/api/v1/incidents", json=incident_payload)
+    response = await client.post(
+        "/api/v1/incidents",
+        json=incident_payload,
+        headers=operator_headers,
+    )
 
     assert response.status_code == 422
 
@@ -71,10 +81,15 @@ async def test_create_incident_rejects_blank_required_text(
     client: AsyncClient,
     database_session_factory: async_sessionmaker[AsyncSession],
     incident_payload: dict[str, Any],
+    operator_headers: dict[str, str],
 ) -> None:
     incident_payload[field] = "   "
 
-    response = await client.post("/api/v1/incidents", json=incident_payload)
+    response = await client.post(
+        "/api/v1/incidents",
+        json=incident_payload,
+        headers=operator_headers,
+    )
 
     assert response.status_code == 422
 
@@ -85,10 +100,15 @@ async def test_create_incident_rejects_naive_occurred_at(
     client: AsyncClient,
     database_session_factory: async_sessionmaker[AsyncSession],
     incident_payload: dict[str, Any],
+    operator_headers: dict[str, str],
 ) -> None:
     incident_payload["occurred_at"] = "2026-09-11T18:30:00"
 
-    response = await client.post("/api/v1/incidents", json=incident_payload)
+    response = await client.post(
+        "/api/v1/incidents",
+        json=incident_payload,
+        headers=operator_headers,
+    )
 
     assert response.status_code == 422
 
@@ -99,10 +119,15 @@ async def test_create_incident_rejects_client_supplied_status(
     client: AsyncClient,
     database_session_factory: async_sessionmaker[AsyncSession],
     incident_payload: dict[str, Any],
+    operator_headers: dict[str, str],
 ) -> None:
     incident_payload["status"] = "resolved"
 
-    response = await client.post("/api/v1/incidents", json=incident_payload)
+    response = await client.post(
+        "/api/v1/incidents",
+        json=incident_payload,
+        headers=operator_headers,
+    )
 
     assert response.status_code == 422
     assert any(
@@ -116,12 +141,20 @@ async def test_get_incident_returns_created_incident(
     client: AsyncClient,
     database_session_factory: async_sessionmaker[AsyncSession],
     incident_payload: dict[str, Any],
+    operator_headers: dict[str, str],
 ) -> None:
-    create_response = await client.post("/api/v1/incidents", json=incident_payload)
+    create_response = await client.post(
+        "/api/v1/incidents",
+        json=incident_payload,
+        headers=operator_headers,
+    )
     assert create_response.status_code == 201
     created_incident = create_response.json()
 
-    response = await client.get(f"/api/v1/incidents/{created_incident['id']}")
+    response = await client.get(
+        f"/api/v1/incidents/{created_incident['id']}",
+        headers=operator_headers,
+    )
 
     assert response.status_code == 200
     assert response.json() == created_incident
@@ -132,8 +165,12 @@ async def test_get_incident_returns_created_incident(
 async def test_get_incident_returns_not_found_for_unknown_uuid(
     client: AsyncClient,
     database_session_factory: async_sessionmaker[AsyncSession],
+    operator_headers: dict[str, str],
 ) -> None:
-    response = await client.get(f"/api/v1/incidents/{uuid4()}")
+    response = await client.get(
+        f"/api/v1/incidents/{uuid4()}",
+        headers=operator_headers,
+    )
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Incident not found"}
@@ -144,7 +181,11 @@ async def test_get_incident_returns_not_found_for_unknown_uuid(
 async def test_get_incident_rejects_malformed_uuid(
     client: AsyncClient,
     database_session_factory: async_sessionmaker[AsyncSession],
+    operator_headers: dict[str, str],
 ) -> None:
-    response = await client.get("/api/v1/incidents/not-a-uuid")
+    response = await client.get(
+        "/api/v1/incidents/not-a-uuid",
+        headers=operator_headers,
+    )
 
     assert response.status_code == 422

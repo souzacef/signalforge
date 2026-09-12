@@ -2,52 +2,17 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from httpx import AsyncClient, Response
+from httpx import AsyncClient
 from pydantic import SecretStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from signalforge.auth.passwords import hash_password
 from signalforge.auth.service import create_user
 from signalforge.auth.tokens import create_access_token
 from signalforge.core.config import get_settings
 from signalforge.users.models import User, UserRole
 from signalforge.users.schemas import UserCreate
-
-VALID_PASSWORD = "correct horse battery staple"
-VALID_PASSWORD_HASH = hash_password(VALID_PASSWORD)
-
-
-async def persist_user(
-    session_factory: async_sessionmaker[AsyncSession],
-    *,
-    email: str = "operator@example.com",
-    role: UserRole = UserRole.OPERATOR,
-    is_active: bool = True,
-) -> User:
-    async with session_factory() as session:
-        user = User(
-            email=email,
-            password_hash=VALID_PASSWORD_HASH,
-            role=role,
-            is_active=is_active,
-        )
-        session.add(user)
-        await session.commit()
-        await session.refresh(user)
-        return user
-
-
-async def login(
-    client: AsyncClient,
-    *,
-    email: str = "operator@example.com",
-    password: str = VALID_PASSWORD,
-) -> Response:
-    return await client.post(
-        "/api/v1/auth/token",
-        data={"username": email, "password": password},
-    )
+from tests.integration.factories import VALID_PASSWORD, login, persist_user
 
 
 @pytest.mark.integration
