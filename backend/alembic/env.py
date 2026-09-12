@@ -11,6 +11,7 @@ from signalforge.db.base import Base
 
 # Import model modules so their tables are registered with the shared metadata.
 from signalforge.incidents import models as incident_models  # noqa: F401
+from signalforge.outbox import models as outbox_models  # noqa: F401
 from signalforge.users import models as user_models  # noqa: F401
 
 config = context.config

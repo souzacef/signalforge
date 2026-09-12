@@ -153,6 +153,13 @@ query whitespace. Results are ordered by `occurred_at` descending, then `id`
 descending. The response `total` is the number of matching incidents before
 pagination. Full-text search is not implemented.
 
+Successful new Incident creation atomically commits the Incident and one durable
+`incident.created` v1 outbox intent in PostgreSQL. The intent stores an immutable
+creation snapshot; this is persistence only, with no RabbitMQ publisher or
+dispatcher yet. Historical incidents are not backfilled, and lifecycle transitions
+do not emit events yet. The Incident table remains the source of truth; the outbox
+is delivery infrastructure, not event sourcing.
+
 ## Local authentication
 
 Passwords are hashed with Argon2 and access tokens are signed JWTs containing
