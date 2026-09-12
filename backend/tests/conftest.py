@@ -1,22 +1,16 @@
 import os
 from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-# Application imports construct process-level database infrastructure but do not
-# connect. Use a fallback only when neither the environment nor a dotenv file is
-# supplying the required setting.
-if (
-    "SIGNALFORGE_DATABASE_URL" not in os.environ
-    and not Path(".env").is_file()
-    and not Path("../.env").is_file()
-):
-    os.environ["SIGNALFORGE_DATABASE_URL"] = (
-        "postgresql+asyncpg://signalforge:signalforge-local@localhost:5432/signalforge"
-    )
+from tests.database_safety import DATABASE_ENV_VAR, require_test_database_url
+
+# Validate before application imports construct process-level database infrastructure.
+os.environ[DATABASE_ENV_VAR] = require_test_database_url(
+    os.environ.get(DATABASE_ENV_VAR)
+)
 os.environ.setdefault(
     "SIGNALFORGE_JWT_SECRET",
     "test-only-secret-not-for-production-0123456789",

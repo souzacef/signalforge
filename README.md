@@ -1,8 +1,9 @@
 # SignalForge
 
 SignalForge is a portfolio project for exploring incident automation and
-AI-assisted operations. Its current backend increment can persist, create, and
-retrieve incidents through a small Python API backed by PostgreSQL.
+AI-assisted operations. Its current backend provides an authenticated Incident
+API backed by PostgreSQL, with role-based access control, deterministic lifecycle
+transitions, and filtered, paginated listing.
 
 The application begins as a modular monolith. This keeps deployment and local
 development straightforward while domain boundaries are still emerging, without
@@ -48,7 +49,23 @@ docker compose up -d
 docker compose ps
 ```
 
-From `backend/`, start the API:
+From `backend/`, apply the database migrations:
+
+```sh
+uv run alembic upgrade head
+```
+
+There is no public registration endpoint. Bootstrap a user when needed; the
+command prompts for the password twice without accepting it as a command-line
+argument:
+
+```sh
+uv run python -m signalforge.users.create_user \
+  --email admin@example.com \
+  --role admin
+```
+
+Then start the API:
 
 ```sh
 uv run uvicorn signalforge.main:app --app-dir src --reload
@@ -110,16 +127,6 @@ only the user UUID and issued-at/expiration timestamps. Tokens expire after 30
 minutes by default; configure `SIGNALFORGE_ACCESS_TOKEN_EXPIRE_MINUTES` to
 change that duration.
 
-There is no public registration endpoint. After applying migrations, bootstrap
-a user from `backend/`; the command prompts for the password twice without
-accepting it as a command-line argument:
-
-```sh
-uv run python -m signalforge.users.create_user \
-  --email admin@example.com \
-  --role admin
-```
-
 Log in using the first-party OAuth2 password form. SignalForge uses an email
 address in the standard form field named `username`:
 
@@ -175,17 +182,21 @@ uv run alembic revision --autogenerate -m "describe the change"
 
 ## Quality checks
 
-Run all tests (including the PostgreSQL integration test) while PostgreSQL is
-healthy:
+Run all tests (including the PostgreSQL integration tests) against a dedicated
+database named `signalforge_test`. Set `SIGNALFORGE_DATABASE_URL` explicitly;
+the test suite rejects dotenv fallbacks and other database names before opening
+a connection:
 
 ```sh
-uv run pytest
+SIGNALFORGE_DATABASE_URL=postgresql+asyncpg://signalforge:password@localhost:5432/signalforge_test \
+  uv run pytest
 ```
 
-Run only fast tests without PostgreSQL:
+The same safety guard applies when selecting only fast tests:
 
 ```sh
-uv run pytest -m "not integration"
+SIGNALFORGE_DATABASE_URL=postgresql+asyncpg://signalforge:password@localhost:5432/signalforge_test \
+  uv run pytest -m "not integration"
 ```
 
 Formatting, linting, and type checking:
