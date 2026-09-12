@@ -84,6 +84,11 @@ async def test_authenticated_creation_commits_incident_and_snapshot_once(
     assert outbox.occurred_at != incident.occurred_at
     assert outbox.created_at.tzinfo is not None
     assert outbox.published_at is None
+    assert outbox.attempt_count == 0
+    assert outbox.next_attempt_at == outbox.created_at
+    assert outbox.claim_token is None
+    assert outbox.claimed_until is None
+    assert outbox.last_error is None
     assert outbox.payload == {
         "source": "manual",
         "title": "Checkout alert",

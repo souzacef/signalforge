@@ -160,6 +160,14 @@ dispatcher yet. Historical incidents are not backfilled, and lifecycle transitio
 do not emit events yet. The Incident table remains the source of truth; the outbox
 is delivery infrastructure, not event sourcing.
 
+Pending outbox intents support PostgreSQL lease-based ownership and retry
+scheduling. Each committed claim increments the attempt count, even if its owner
+stops before using it; rolled-back claims do not count. Claim, settlement, and
+release helpers leave commit/rollback to the caller's short database transaction.
+Release preserves the due time, making already-due work immediately eligible.
+RabbitMQ publication and a dispatcher loop are not implemented. Claims fence
+database settlement, not external delivery, and do not provide exactly-once delivery.
+
 ## Local authentication
 
 Passwords are hashed with Argon2 and access tokens are signed JWTs containing
