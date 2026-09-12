@@ -18,5 +18,30 @@ services:
       retries: 10
       start_period: 5s
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      SIGNALFORGE_APP_ENVIRONMENT: ${SIGNALFORGE_APP_ENVIRONMENT:-development}
+      SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-signalforge}:${POSTGRES_PASSWORD:-signalforge-local}@postgres:5432/${POSTGRES_DB:-signalforge}
+      SIGNALFORGE_JWT_SECRET: ${SIGNALFORGE_JWT_SECRET:?Set SIGNALFORGE_JWT_SECRET in .env}
+      SIGNALFORGE_ACCESS_TOKEN_EXPIRE_MINUTES: ${SIGNALFORGE_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).close()
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+
 volumes:
   signalforge-postgres-data:

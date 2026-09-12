@@ -37,15 +37,15 @@ the populated file.
 The application reads `.env` from either the current directory or its parent.
 Environment variables take precedence over values in the file.
 
-Start PostgreSQL from the repository root with either runtime:
+Start only PostgreSQL from the repository root with either runtime:
 
 ```sh
-podman compose up -d
+podman compose up -d postgres
 podman compose ps
 ```
 
 ```sh
-docker compose up -d
+docker compose up -d postgres
 docker compose ps
 ```
 
@@ -70,6 +70,39 @@ Then start the API:
 ```sh
 uv run uvicorn signalforge.main:app --app-dir src --reload
 ```
+
+This direct host-development workflow remains supported and uses Uvicorn reload
+for local iteration.
+
+## Container workflow
+
+The backend image is a reproducible application runtime without source bind
+mounts or development reload. Before using Compose, set a generated
+`SIGNALFORGE_JWT_SECRET` in `.env`; Compose rejects an unset or empty value.
+
+The commands below use Podman. Replace `podman compose` with `docker compose`
+for the equivalent Docker workflow:
+
+```sh
+podman compose build backend
+podman compose up -d postgres
+podman compose run --rm backend alembic upgrade head
+podman compose up -d backend
+podman compose ps
+```
+
+Migrations are an explicit one-shot command and are never run by the image or
+API startup. The same backend image supplies both the default API command and
+the Alembic CLI; later processes can override the command without requiring a
+different image.
+
+The API is available at <http://127.0.0.1:8000> by default. Set
+`BACKEND_PORT` to change the published host port. Compose connects the backend
+to PostgreSQL through the `postgres` service hostname, while direct host
+development continues to use the URL from `.env`.
+
+This is a local container runtime contract, not production deployment
+infrastructure. RabbitMQ and worker services are not included yet.
 
 The API exposes:
 
