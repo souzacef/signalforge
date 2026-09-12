@@ -29,19 +29,19 @@ jobs:
       postgres:
         image: postgres:18-alpine
         env:
-          POSTGRES_DB: signalforge
+          POSTGRES_DB: signalforge_test
           POSTGRES_USER: signalforge
           POSTGRES_PASSWORD: signalforge-ci
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U signalforge -d signalforge"
+          --health-cmd "pg_isready -U signalforge -d signalforge_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
       SIGNALFORGE_APP_ENVIRONMENT: test
-      SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://signalforge:signalforge-ci@localhost:5432/signalforge
+      SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://signalforge:signalforge-ci@localhost:5432/signalforge_test
       SIGNALFORGE_JWT_SECRET: test-only-secret-not-for-production-0123456789
       UV_LOCKED: "1"
     steps:
@@ -70,6 +70,9 @@ jobs:
 
       - name: Apply database migrations
         run: uv run alembic upgrade head
+
+      - name: Check migration drift
+        run: uv run alembic check
 
       - name: Test
         run: uv run pytest
