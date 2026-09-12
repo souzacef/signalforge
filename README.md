@@ -25,9 +25,13 @@ Create the local environment file and install the locked dependencies:
 
 ```sh
 cp .env.example .env
+openssl rand -hex 32
 cd backend
 uv sync --locked
 ```
+
+Copy the generated value into `SIGNALFORGE_JWT_SECRET` in `.env`. Do not commit
+the populated file.
 
 The application reads `.env` from either the current directory or its parent.
 Environment variables take precedence over values in the file.
@@ -57,6 +61,8 @@ The API exposes:
   otherwise `503` without exposing connection details.
 - `POST /api/v1/incidents` — creates an incident with initial status `open`.
 - `GET /api/v1/incidents/{incident_id}` — retrieves an incident by UUID.
+- `POST /api/v1/auth/token` — authenticates an email and password.
+- `GET /api/v1/auth/me` — returns the authenticated user.
 
 Interactive API documentation is available at <http://127.0.0.1:8000/docs>.
 
@@ -73,6 +79,44 @@ curl -X POST http://127.0.0.1:8000/api/v1/incidents \
     "occurred_at": "2026-09-11T18:30:00Z"
   }'
 ```
+
+## Local authentication
+
+Passwords are hashed with Argon2 and access tokens are signed JWTs containing
+only the user UUID and issued-at/expiration timestamps. Tokens expire after 30
+minutes by default; configure `SIGNALFORGE_ACCESS_TOKEN_EXPIRE_MINUTES` to
+change that duration.
+
+There is no public registration endpoint. After applying migrations, bootstrap
+a user from `backend/`; the command prompts for the password twice without
+accepting it as a command-line argument:
+
+```sh
+uv run python -m signalforge.users.create_user \
+  --email admin@example.com \
+  --role admin
+```
+
+Log in using the first-party OAuth2 password form. SignalForge uses an email
+address in the standard form field named `username`:
+
+```sh
+curl -X POST http://127.0.0.1:8000/api/v1/auth/token \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'username=admin@example.com' \
+  --data-urlencode 'password=your-password'
+```
+
+Use the returned access token to resolve the current user:
+
+```sh
+curl http://127.0.0.1:8000/api/v1/auth/me \
+  -H 'Authorization: Bearer your-access-token'
+```
+
+Users store one of the `viewer`, `operator`, or `admin` roles, but RBAC is
+not enforced yet. Role enforcement is planned for the next increment, and the
+Incident endpoints remain intentionally unprotected in this commit.
 
 ## Database migrations
 

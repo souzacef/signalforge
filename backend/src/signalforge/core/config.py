@@ -1,6 +1,7 @@
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic import PostgresDsn
+from pydantic import Field, PostgresDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,8 @@ class Settings(BaseSettings):
     app_name: str = "SignalForge"
     app_environment: str = "development"
     database_url: PostgresDsn
+    jwt_secret: Annotated[SecretStr, Field(min_length=32)]
+    access_token_expire_minutes: Annotated[int, Field(gt=0)] = 30
 
 
 @lru_cache
