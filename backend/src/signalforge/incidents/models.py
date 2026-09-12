@@ -3,7 +3,7 @@ from enum import Enum as PythonEnum
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -59,6 +59,32 @@ class Incident(Base):
         nullable=False,
         default=IncidentStatus.OPEN,
         server_default=IncidentStatus.OPEN.value,
+    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    acknowledged_by_user_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_incidents_acknowledged_by_user_id_users",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    resolved_by_user_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_incidents_resolved_by_user_id_users",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
     )
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

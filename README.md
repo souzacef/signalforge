@@ -63,6 +63,10 @@ The API exposes:
   requires an `operator` or `admin` bearer token.
 - `GET /api/v1/incidents/{incident_id}` — retrieves an incident by UUID;
   requires a `viewer`, `operator`, or `admin` bearer token.
+- `POST /api/v1/incidents/{incident_id}/acknowledge` — acknowledges an open
+  incident; requires an `operator` or `admin` bearer token.
+- `POST /api/v1/incidents/{incident_id}/resolve` — resolves an acknowledged
+  incident; requires an `operator` or `admin` bearer token.
 - `POST /api/v1/auth/token` — authenticates an email and password.
 - `GET /api/v1/auth/me` — returns the authenticated user.
 
@@ -120,11 +124,11 @@ curl http://127.0.0.1:8000/api/v1/auth/me \
 Incident endpoints require authentication and enforce these explicit role
 permissions:
 
-| Role | Read incidents | Create incidents |
-| --- | --- | --- |
-| `viewer` | Yes | No |
-| `operator` | Yes | Yes |
-| `admin` | Yes | Yes |
+| Role | Read | Create | Acknowledge | Resolve |
+| --- | --- | --- | --- | --- |
+| `viewer` | Yes | No | No | No |
+| `operator` | Yes | Yes | Yes | Yes |
+| `admin` | Yes | Yes | Yes | Yes |
 
 Access tokens do not contain role claims. Each authenticated request loads the
 current User from PostgreSQL, so role and active-state changes apply without
@@ -132,8 +136,11 @@ waiting for the token to expire. A missing or invalid bearer token is an
 authentication failure (`401` with `WWW-Authenticate: Bearer`); an authenticated
 user without an allowed role receives `403`.
 
-Incident lifecycle actions and broader administrator management are not
-implemented yet.
+The deterministic Incident lifecycle is `OPEN -> ACKNOWLEDGED -> RESOLVED`.
+Direct arbitrary status updates and reopening are not exposed. Each transition
+stores its UTC timestamp and the authenticated actor's UUID; invalid state
+transitions return `409 Conflict`. A lifecycle history or timeline and broader
+administrator management are not implemented yet.
 
 ## Database migrations
 
