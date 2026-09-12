@@ -42,6 +42,7 @@ jobs:
     env:
       SIGNALFORGE_APP_ENVIRONMENT: test
       SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://signalforge:signalforge-ci@localhost:5432/signalforge
+      SIGNALFORGE_JWT_SECRET: test-only-secret-not-for-production-0123456789
       UV_LOCKED: "1"
     steps:
       - name: Check out repository

@@ -17,6 +17,10 @@ if (
     os.environ["SIGNALFORGE_DATABASE_URL"] = (
         "postgresql+asyncpg://signalforge:signalforge-local@localhost:5432/signalforge"
     )
+os.environ.setdefault(
+    "SIGNALFORGE_JWT_SECRET",
+    "test-only-secret-not-for-production-0123456789",
+)
 
 from signalforge.main import create_app  # noqa: E402
 
