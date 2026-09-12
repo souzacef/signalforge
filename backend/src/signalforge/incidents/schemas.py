@@ -39,6 +39,10 @@ class IncidentResponse(BaseModel):
     description: str | None
     severity: IncidentSeverity
     status: IncidentStatus
+    acknowledged_at: datetime | None
+    acknowledged_by_user_id: UUID | None
+    resolved_at: datetime | None
+    resolved_by_user_id: UUID | None
     occurred_at: datetime
     created_at: datetime
     updated_at: datetime

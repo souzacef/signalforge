@@ -42,6 +42,10 @@ async def test_create_incident_persists_open_incident(
     assert body["description"] == "5xx error rate exceeded threshold"
     assert body["severity"] == "high"
     assert body["status"] == "open"
+    assert body["acknowledged_at"] is None
+    assert body["acknowledged_by_user_id"] is None
+    assert body["resolved_at"] is None
+    assert body["resolved_by_user_id"] is None
     assert datetime.fromisoformat(body["occurred_at"]).tzinfo is not None
     assert datetime.fromisoformat(body["created_at"]).tzinfo is not None
     assert datetime.fromisoformat(body["updated_at"]).tzinfo is not None
@@ -52,6 +56,10 @@ async def test_create_incident_persists_open_incident(
     assert stored_incident is not None
     assert stored_incident.status is IncidentStatus.OPEN
     assert stored_incident.source == "manual"
+    assert stored_incident.acknowledged_at is None
+    assert stored_incident.acknowledged_by_user_id is None
+    assert stored_incident.resolved_at is None
+    assert stored_incident.resolved_by_user_id is None
 
 
 @pytest.mark.integration
