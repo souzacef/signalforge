@@ -1,7 +1,9 @@
 from collections.abc import AsyncIterator
+from socket import gaierror
 from unittest.mock import AsyncMock
 
 import pytest
+from asyncpg import CannotConnectNowError
 from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy.exc import SQLAlchemyError
@@ -47,6 +49,51 @@ async def test_readiness_sanitizes_database_failures(
     assert response.status_code == 503
     assert response.json() == {"status": "unavailable"}
     assert "sensitive-value" not in response.text
+
+
+@pytest.mark.anyio
+async def test_readiness_sanitizes_dns_resolution_failures(
+    app: FastAPI,
+    client: AsyncClient,
+) -> None:
+    session = AsyncMock(spec=AsyncSession)
+    session.execute.side_effect = gaierror(
+        -2,
+        "database.internal: sensitive-name-resolution-detail",
+    )
+
+    async def failing_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app.dependency_overrides[get_session] = failing_session
+
+    response = await client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+    assert "sensitive-name-resolution-detail" not in response.text
+
+
+@pytest.mark.anyio
+async def test_readiness_sanitizes_asyncpg_connection_failures(
+    app: FastAPI,
+    client: AsyncClient,
+) -> None:
+    session = AsyncMock(spec=AsyncSession)
+    session.execute.side_effect = CannotConnectNowError(
+        "sensitive-database-startup-detail"
+    )
+
+    async def failing_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app.dependency_overrides[get_session] = failing_session
+
+    response = await client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+    assert "sensitive-database-startup-detail" not in response.text
 
 
 @pytest.mark.anyio

@@ -1,5 +1,6 @@
 from typing import Annotated
 
+from asyncpg import PostgresError  # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -32,8 +33,8 @@ async def readiness(session: DatabaseSession) -> HealthResponse | JSONResponse:
     """Report whether PostgreSQL is reachable without leaking failure details."""
     try:
         await session.execute(text("SELECT 1"))
-    except SQLAlchemyError:
-        # Readiness is a protective boundary: database errors must not reach clients.
+    except (SQLAlchemyError, PostgresError, OSError):
+        # asyncpg can surface driver and socket errors without SQLAlchemy wrapping.
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"status": "unavailable"},
