@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from signalforge.auth.authorization import require_roles
@@ -12,7 +12,12 @@ from signalforge.incidents.errors import (
     InvalidIncidentTransitionError,
 )
 from signalforge.incidents.models import Incident
-from signalforge.incidents.schemas import IncidentCreate, IncidentResponse
+from signalforge.incidents.schemas import (
+    IncidentCreate,
+    IncidentListQuery,
+    IncidentListResponse,
+    IncidentResponse,
+)
 from signalforge.users.models import User, UserRole
 
 router = APIRouter(prefix="/api/v1/incidents", tags=["incidents"])
@@ -21,6 +26,7 @@ LifecycleActor = Annotated[
     User,
     Depends(require_roles(UserRole.OPERATOR, UserRole.ADMIN)),
 ]
+IncidentQuery = Annotated[IncidentListQuery, Query()]
 
 
 @router.post(
@@ -34,6 +40,28 @@ async def create_incident(
     session: DatabaseSession,
 ) -> Incident:
     return await service.create_incident(session, incident_data)
+
+
+@router.get(
+    "",
+    response_model=IncidentListResponse,
+    dependencies=[
+        Depends(
+            require_roles(UserRole.VIEWER, UserRole.OPERATOR, UserRole.ADMIN),
+        ),
+    ],
+)
+async def list_incidents(
+    query: IncidentQuery,
+    session: DatabaseSession,
+) -> IncidentListResponse:
+    incidents, total = await service.list_incidents(session, query)
+    return IncidentListResponse(
+        items=[IncidentResponse.model_validate(incident) for incident in incidents],
+        limit=query.limit,
+        offset=query.offset,
+        total=total,
+    )
 
 
 @router.get(

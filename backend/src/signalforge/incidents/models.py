@@ -3,7 +3,7 @@ from enum import Enum as PythonEnum
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,7 @@ def _enum_values(enum_class: type[PythonEnum]) -> list[str]:
 
 class Incident(Base):
     __tablename__ = "incidents"
+    __table_args__ = (Index("ix_incidents_occurred_at_id", "occurred_at", "id"),)
 
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
