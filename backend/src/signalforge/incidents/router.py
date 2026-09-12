@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from signalforge.auth.authorization import require_roles
 from signalforge.db.session import get_session
-from signalforge.incidents import service
+from signalforge.incidents import application, service
 from signalforge.incidents.errors import (
     IncidentNotFoundError,
     InvalidIncidentTransitionError,
@@ -38,8 +38,8 @@ IncidentQuery = Annotated[IncidentListQuery, Query()]
 async def create_incident(
     incident_data: IncidentCreate,
     session: DatabaseSession,
-) -> Incident:
-    return await service.create_incident(session, incident_data)
+) -> IncidentResponse:
+    return await application.create_incident_with_event(session, incident_data)
 
 
 @router.get(

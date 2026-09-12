@@ -19,8 +19,7 @@ async def create_incident(
 ) -> Incident:
     incident = Incident(**incident_data.model_dump())
     session.add(incident)
-    await session.commit()
-    await session.refresh(incident)
+    await session.flush()
     return incident
 
 
