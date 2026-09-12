@@ -68,3 +68,11 @@ async def operator_headers(
 ) -> dict[str, str]:
     headers, _ = await auth_headers_factory(UserRole.OPERATOR)
     return headers
+
+
+@pytest.fixture
+async def viewer_headers(
+    auth_headers_factory: AuthHeadersFactory,
+) -> dict[str, str]:
+    headers, _ = await auth_headers_factory(UserRole.VIEWER)
+    return headers

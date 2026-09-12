@@ -1,15 +1,16 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from signalforge.incidents.errors import (
     IncidentNotFoundError,
     InvalidIncidentTransitionError,
 )
 from signalforge.incidents.models import Incident, IncidentStatus
-from signalforge.incidents.schemas import IncidentCreate
+from signalforge.incidents.schemas import IncidentCreate, IncidentListQuery
 
 
 async def create_incident(
@@ -28,6 +29,39 @@ async def get_incident(
     incident_id: UUID,
 ) -> Incident | None:
     return await session.get(Incident, incident_id)
+
+
+def _incident_filters(query: IncidentListQuery) -> tuple[ColumnElement[bool], ...]:
+    filters: list[ColumnElement[bool]] = []
+    if query.status is not None:
+        filters.append(Incident.status == query.status)
+    if query.severity is not None:
+        filters.append(Incident.severity == query.severity)
+    if query.source is not None:
+        filters.append(Incident.source == query.source)
+    if query.occurred_from is not None:
+        filters.append(Incident.occurred_at >= query.occurred_from)
+    if query.occurred_to is not None:
+        filters.append(Incident.occurred_at <= query.occurred_to)
+    return tuple(filters)
+
+
+async def list_incidents(
+    session: AsyncSession,
+    query: IncidentListQuery,
+) -> tuple[list[Incident], int]:
+    filters = _incident_filters(query)
+    total = await session.scalar(
+        select(func.count()).select_from(Incident).where(*filters)
+    )
+    incidents = await session.scalars(
+        select(Incident)
+        .where(*filters)
+        .order_by(Incident.occurred_at.desc(), Incident.id.desc())
+        .limit(query.limit)
+        .offset(query.offset)
+    )
+    return list(incidents), total or 0
 
 
 async def _get_incident_for_update(

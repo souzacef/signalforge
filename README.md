@@ -61,6 +61,8 @@ The API exposes:
   otherwise `503` without exposing connection details.
 - `POST /api/v1/incidents` — creates an incident with initial status `open`;
   requires an `operator` or `admin` bearer token.
+- `GET /api/v1/incidents` — lists and filters incidents with offset pagination;
+  available to all authenticated roles.
 - `GET /api/v1/incidents/{incident_id}` — retrieves an incident by UUID;
   requires a `viewer`, `operator`, or `admin` bearer token.
 - `POST /api/v1/incidents/{incident_id}/acknowledge` — acknowledges an open
@@ -86,6 +88,20 @@ curl -X POST http://127.0.0.1:8000/api/v1/incidents \
     "occurred_at": "2026-09-11T18:30:00Z"
   }'
 ```
+
+List incidents with any combination of `status`, `severity`, `source`,
+`occurred_from`, and `occurred_to` filters, plus `limit` and `offset`
+pagination parameters:
+
+```sh
+curl 'http://127.0.0.1:8000/api/v1/incidents?status=open&limit=20&offset=0' \
+  -H 'Authorization: Bearer your-access-token'
+```
+
+Filters combine with `AND`; source matching is exact after trimming surrounding
+query whitespace. Results are ordered by `occurred_at` descending, then `id`
+descending. The response `total` is the number of matching incidents before
+pagination. Full-text search is not implemented.
 
 ## Local authentication
 
