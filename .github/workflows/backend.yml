@@ -39,10 +39,27 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4.3.5-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: signalforge
+          RABBITMQ_DEFAULT_PASS: signalforge-ci
+          RABBITMQ_DEFAULT_VHOST: signalforge_test_ci
+        ports:
+          - 5672:5672
+          - 15672:15672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
     env:
       SIGNALFORGE_APP_ENVIRONMENT: test
       SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://signalforge:signalforge-ci@localhost:5432/signalforge_test
       SIGNALFORGE_JWT_SECRET: test-only-secret-not-for-production-0123456789
+      SIGNALFORGE_TEST_RABBITMQ_URL: amqp://signalforge:signalforge-ci@localhost:5672/signalforge_test_ci
+      SIGNALFORGE_TEST_RABBITMQ_MANAGEMENT_URL: http://localhost:15672
       UV_LOCKED: "1"
     steps:
       - name: Check out repository
