@@ -3,16 +3,17 @@
 SignalForge is a portfolio project for exploring incident automation and
 AI-assisted operations. Its current backend provides an authenticated Incident
 API backed by PostgreSQL, with role-based access control, deterministic lifecycle
-transitions, filtered paginated listing, and durable asynchronous publication of
-new-Incident events to RabbitMQ.
+transitions, filtered paginated listing, and durable asynchronous publication and
+idempotent consumption of new-Incident events through RabbitMQ.
 
 The application begins as a modular monolith. This keeps deployment and local
 development straightforward while domain boundaries are still emerging, without
 preventing modules from being separated later when real operational needs justify
 it.
 
-Event consumption, AI/RAG, observability, Angular, Kubernetes, Helm, Terraform,
-and AWS are planned directions. They are not implemented in this phase.
+Business event handlers beyond durable receipt recording, AI/RAG, observability,
+Angular, Kubernetes, Helm, Terraform, and AWS are planned directions. They are
+not implemented in this phase.
 
 ## Prerequisites
 
@@ -112,8 +113,9 @@ The dispatcher runs independently from FastAPI and is not part of API readiness.
 If RabbitMQ or the dispatcher is unavailable, Incident creation still commits
 the Incident and its outbox event. Pending events are published when both return.
 Delivery is at-least-once: ambiguous publisher-confirm or publish/settlement
-crash windows can cause duplicate messages, so future consumers must be
-idempotent. No long-running consumer service exists yet.
+crash windows can cause duplicate messages, so consumers must be
+idempotent. The standalone consumer runtime described below is intentionally not
+part of the Compose stack yet.
 
 This is a local container runtime contract, not production deployment
 infrastructure.
@@ -224,8 +226,24 @@ one durable processing receipt per event for the stable logical consumer. The
 receipt commits before ACK, so broker redelivery after ACK loss is safely treated
 as a duplicate. Malformed and unsupported messages are terminally rejected and
 discarded because no DLQ exists yet; transient database failures are requeued.
-There is no standalone long-running consumer runtime, and full event handling
-still stops at durable RabbitMQ publication.
+
+Run the standalone consumer independently of FastAPI after migrations have been
+applied and `SIGNALFORGE_RABBITMQ_URL` has been set:
+
+```sh
+uv run python -m signalforge.consumers.runtime
+```
+
+The runtime consumes the durable `signalforge.incident-events` queue sequentially
+with a default prefetch count of one and delegates each delivery to the durable,
+idempotent handler above. PostgreSQL and RabbitMQ outages are retried with bounded
+exponential backoff and jitter. Poison messages are safely logged and consumption
+continues; `SIGTERM` and `SIGINT` stop new work and allow an active delivery a
+bounded drain period. No DLQ or Compose consumer service is provided in this
+slice, and event handling has no business side effect beyond recording the durable
+receipt.
+No AI triage is performed.
+
 Publication remains outside the API request path, and API readiness remains
 PostgreSQL-only.
 
