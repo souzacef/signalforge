@@ -32,11 +32,23 @@ from yarl import URL
 
 from signalforge.incidents.events import IncidentCreated, IncidentCreatedPayload
 from signalforge.outbox.dispatching import ClaimSnapshot, FrozenJSON
+from signalforge.triage.events import (
+    TriageEnrichmentRequested,
+    TriageEnrichmentRequestedPayload,
+)
 
 EXCHANGE_NAME = "signalforge.events"
 QUEUE_NAME = "signalforge.incident-events"
 ROUTING_KEY = "incident.created"
+ENRICHMENT_QUEUE_NAME = "signalforge.triage-enrichment"
+ENRICHMENT_ROUTING_KEY = "triage.enrichment.requested"
+_ROUTING_KEYS = {
+    "incident.created": ROUTING_KEY,
+    "triage.enrichment.requested": ENRICHMENT_ROUTING_KEY,
+}
 _TRANSPORT_ERRORS = (AMQPError, ChannelInvalidStateError, OSError, PAMQPException)
+
+type PublishableEvent = IncidentCreated | TriageEnrichmentRequested
 
 
 class StoredEventError(ValueError):
@@ -85,21 +97,31 @@ def thaw_json(value: FrozenJSON) -> JsonValue:
     raise StoredEventError("invalid_event")
 
 
-def reconstruct_event(claim: ClaimSnapshot) -> IncidentCreated:
-    if claim.event_type != ROUTING_KEY:
+def reconstruct_event(claim: ClaimSnapshot) -> PublishableEvent:
+    if claim.event_type not in _ROUTING_KEYS:
         raise StoredEventError("unsupported_type")
     if claim.event_version != 1:
         raise StoredEventError("unsupported_version")
+    envelope = {
+        "event_id": claim.id,
+        "event_type": claim.event_type,
+        "event_version": claim.event_version,
+        "occurred_at": claim.occurred_at,
+        "aggregate_id": claim.aggregate_id,
+    }
     try:
-        payload = IncidentCreatedPayload.model_validate(thaw_json(claim.payload))
-        return IncidentCreated.model_validate(
+        payload = thaw_json(claim.payload)
+        if claim.event_type == ROUTING_KEY:
+            return IncidentCreated.model_validate(
+                {
+                    **envelope,
+                    "payload": IncidentCreatedPayload.model_validate(payload),
+                }
+            )
+        return TriageEnrichmentRequested.model_validate(
             {
-                "event_id": claim.id,
-                "event_type": claim.event_type,
-                "event_version": claim.event_version,
-                "occurred_at": claim.occurred_at,
-                "aggregate_id": claim.aggregate_id,
-                "payload": payload,
+                **envelope,
+                "payload": TriageEnrichmentRequestedPayload.model_validate(payload),
             }
         )
     except ValidationError:
@@ -131,7 +153,7 @@ async def declare_topology(
             auto_delete=False,
             timeout=timeout,
         )
-        queue = await channel.declare_queue(
+        incident_queue = await channel.declare_queue(
             QUEUE_NAME,
             durable=True,
             exclusive=False,
@@ -139,7 +161,20 @@ async def declare_topology(
             arguments={"x-queue-type": "classic"},
             timeout=timeout,
         )
-        await queue.bind(exchange, routing_key=ROUTING_KEY, timeout=timeout)
+        await incident_queue.bind(exchange, routing_key=ROUTING_KEY, timeout=timeout)
+        enrichment_queue = await channel.declare_queue(
+            ENRICHMENT_QUEUE_NAME,
+            durable=True,
+            exclusive=False,
+            auto_delete=False,
+            arguments={"x-queue-type": "classic"},
+            timeout=timeout,
+        )
+        await enrichment_queue.bind(
+            exchange,
+            routing_key=ENRICHMENT_ROUTING_KEY,
+            timeout=timeout,
+        )
         return exchange
 
 
@@ -243,6 +278,7 @@ class RabbitMQPublisher:
         """
         _positive_timeout(timeout)
         event = reconstruct_event(claim)
+        routing_key = _ROUTING_KEYS[event.event_type]
         message = Message(
             event.model_dump_json().encode("utf-8"),
             message_id=str(event.event_id),
@@ -261,7 +297,7 @@ class RabbitMQPublisher:
                     await self._channel.ready()
                     confirmation = await self._exchange.publish(
                         message,
-                        routing_key=ROUTING_KEY,
+                        routing_key=routing_key,
                         mandatory=True,
                         timeout=timeout,
                     )

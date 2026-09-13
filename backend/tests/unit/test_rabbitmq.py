@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
-from aio_pika import RobustChannel
+from aio_pika import DeliveryMode, RobustChannel
 from aio_pika.abc import (
     AbstractExchange,
     AbstractRobustChannel,
@@ -24,6 +24,7 @@ from pamqp.commands import Basic
 from signalforge.outbox import rabbitmq
 from signalforge.outbox.dispatching import ClaimSnapshot
 from signalforge.outbox.rabbitmq import (
+    ENRICHMENT_ROUTING_KEY,
     PublishFailedError,
     PublishTimeoutError,
     RabbitMQPublisher,
@@ -31,6 +32,7 @@ from signalforge.outbox.rabbitmq import (
     reconstruct_event,
     thaw_json,
 )
+from signalforge.triage.events import TriageEnrichmentRequested
 
 
 @pytest.fixture
@@ -55,6 +57,26 @@ def claim() -> ClaimSnapshot:
         ),
         occurred_at=now,
         created_at=now,
+    )
+
+
+@pytest.fixture
+def enrichment_claim(claim: ClaimSnapshot) -> ClaimSnapshot:
+    return replace(
+        claim,
+        event_type=ENRICHMENT_ROUTING_KEY,
+        payload=MappingProxyType(
+            {
+                "trigger_event_id": str(uuid4()),
+                "source": "manual",
+                "title": "Checkout alert",
+                "description": None,
+                "original_severity": "high",
+                "priority": "P2",
+                "requires_human_review": False,
+                "incident_occurred_at": "2026-09-11T15:30:00-03:00",
+            }
+        ),
     )
 
 
@@ -90,6 +112,44 @@ def test_reconstructs_existing_envelope_without_changing_snapshot(
     assert body["payload"]["title"] == "Alerta São Paulo"
     assert dict(claim.payload) == before
     assert event.model_dump(mode="json")["payload"]["severity"] == "high"
+
+
+def test_reconstructs_typed_enrichment_request(
+    enrichment_claim: ClaimSnapshot,
+) -> None:
+    event = reconstruct_event(enrichment_claim)
+
+    assert isinstance(event, TriageEnrichmentRequested)
+    assert event.event_id == enrichment_claim.id
+    assert event.aggregate_id == enrichment_claim.aggregate_id
+    assert event.event_type == ENRICHMENT_ROUTING_KEY
+    assert (
+        str(event.payload.trigger_event_id)
+        == enrichment_claim.payload["trigger_event_id"]
+    )
+    assert event.payload.priority.value == "P2"
+
+
+@pytest.mark.anyio
+async def test_publishes_enrichment_with_validated_routing_and_properties(
+    enrichment_claim: ClaimSnapshot,
+    publisher: RabbitMQPublisher,
+) -> None:
+    await publisher.publish(enrichment_claim, timeout=1)
+
+    message = publisher._exchange.publish.call_args.args[0]
+    kwargs = publisher._exchange.publish.call_args.kwargs
+    assert kwargs == {
+        "routing_key": ENRICHMENT_ROUTING_KEY,
+        "mandatory": True,
+        "timeout": 1,
+    }
+    assert message.message_id == str(enrichment_claim.id)
+    assert message.type == ENRICHMENT_ROUTING_KEY
+    assert message.content_type == "application/json"
+    assert message.content_encoding == "utf-8"
+    assert message.delivery_mode == DeliveryMode.PERSISTENT
+    assert json.loads(message.body)["payload"]["priority"] == "P2"
 
 
 def test_nested_frozen_payload_is_thawed_without_mutating_claim(

@@ -243,6 +243,20 @@ priority, review requirement, event ID, and creation time persisted from the
 event snapshot; values are not recalculated from current Incident state. This
 remains deterministic baseline triage—AI-assisted triage is not implemented.
 
+First-time deterministic triage also creates a durable
+`triage.enrichment.requested` v1 outbox event. Its own event ID is linked to the
+triggering `incident.created` event through `trigger_event_id`, and its payload
+captures only the Incident event snapshot plus the deterministic triage decision.
+The processing receipt, triage row, and enrichment request commit in one database
+transaction; duplicate Incident delivery creates no additional request.
+
+The existing confirmed dispatcher validates and publishes these requests through
+the direct `signalforge.events` exchange to the durable
+`signalforge.triage-enrichment` queue. No enrichment worker, model invocation,
+or AI result exists yet. Deterministic triage remains authoritative, and external
+AI availability cannot affect Incident creation, triage, readiness, or ACK
+semantics.
+
 Run the standalone consumer independently of FastAPI after migrations have been
 applied and `SIGNALFORGE_RABBITMQ_URL` has been set:
 

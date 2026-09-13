@@ -27,7 +27,13 @@ from signalforge.consumers.runtime import ConsumerBroker, ConsumerSettings, run_
 from signalforge.db.session import engine
 from signalforge.incidents.events import IncidentCreated, IncidentCreatedPayload
 from signalforge.incidents.models import Incident, IncidentSeverity
-from signalforge.outbox.rabbitmq import QUEUE_NAME, ROUTING_KEY, declare_topology
+from signalforge.outbox.models import OutboxEvent
+from signalforge.outbox.rabbitmq import (
+    ENRICHMENT_ROUTING_KEY,
+    QUEUE_NAME,
+    ROUTING_KEY,
+    declare_topology,
+)
 from signalforge.triage.models import IncidentTriage
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -150,12 +156,18 @@ async def broker() -> AsyncIterator[Broker]:
 
 
 @pytest.fixture(autouse=True)
-async def clean_processed_events() -> AsyncIterator[None]:
+async def clean_consumer_effects() -> AsyncIterator[None]:
     async with sessions.begin() as session:
+        await session.execute(
+            delete(OutboxEvent).where(OutboxEvent.event_type == ENRICHMENT_ROUTING_KEY)
+        )
         await session.execute(delete(ProcessedEvent))
         await session.execute(delete(IncidentTriage))
     yield
     async with sessions.begin() as session:
+        await session.execute(
+            delete(OutboxEvent).where(OutboxEvent.event_type == ENRICHMENT_ROUTING_KEY)
+        )
         await session.execute(delete(ProcessedEvent))
         await session.execute(delete(IncidentTriage))
 

@@ -3,7 +3,7 @@ import json
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -34,6 +34,8 @@ from signalforge.outbox.orchestrator import (
     dispatch_batch,
 )
 from signalforge.outbox.rabbitmq import (
+    ENRICHMENT_QUEUE_NAME,
+    ENRICHMENT_ROUTING_KEY,
     EXCHANGE_NAME,
     QUEUE_NAME,
     ROUTING_KEY,
@@ -204,11 +206,37 @@ async def make_due(event_id: UUID) -> None:
         )
 
 
-async def probe(broker: Broker):
+async def seed_enrichment_request() -> UUID:
+    event_id = uuid4()
+    async with sessions.begin() as session:
+        now = await session.scalar(select(func.clock_timestamp()))
+        session.add(
+            OutboxEvent(
+                id=event_id,
+                event_type=ENRICHMENT_ROUTING_KEY,
+                event_version=1,
+                aggregate_id=uuid4(),
+                payload={
+                    "trigger_event_id": str(uuid4()),
+                    "source": "alertmanager",
+                    "title": "Checkout latency increased",
+                    "description": "p95 exceeded the threshold",
+                    "original_severity": "critical",
+                    "priority": "P1",
+                    "requires_human_review": True,
+                    "incident_occurred_at": "2026-09-11T15:30:00-03:00",
+                },
+                occurred_at=now,
+            )
+        )
+    return event_id
+
+
+async def probe(broker: Broker, queue_name: str = QUEUE_NAME):
     connection = await aio_pika.connect(str(broker.url), timeout=5)
     async with connection:
         channel = await connection.channel()
-        queue = await channel.get_queue(QUEUE_NAME)
+        queue = await channel.get_queue(queue_name)
         return await queue.get(no_ack=True, fail=False, timeout=5)
 
 
@@ -250,6 +278,74 @@ async def test_successful_real_one_shot_claims_publishes_and_settles(
     assert row["claim_token"] is row["claimed_until"] is None
     assert row["attempt_count"] == 1
     assert immutable(row) == immutable(before)
+
+
+async def test_real_enrichment_request_dispatches_and_settles(
+    broker: Broker,
+    publisher: RabbitMQPublisher,
+) -> None:
+    event_id = await seed_enrichment_request()
+    try:
+        before = await read_event(event_id)
+        result = await run_batch(publisher)
+        message = await probe(broker, ENRICHMENT_QUEUE_NAME)
+
+        assert result.claimed == result.published == 1
+        assert result.events[0].outcome is DispatchOutcome.PUBLISHED
+        assert result.events[0].publication_confirmed
+        assert message is not None
+        body = json.loads(message.body)
+        assert UUID(body["event_id"]) == event_id
+        assert body["event_type"] == ENRICHMENT_ROUTING_KEY
+        assert body["event_version"] == 1
+        assert UUID(body["aggregate_id"]) == before["aggregate_id"]
+        assert body["payload"] == before["payload"]
+        assert datetime.fromisoformat(body["occurred_at"]) == before["occurred_at"]
+        assert message.message_id == str(event_id)
+        assert message.type == ENRICHMENT_ROUTING_KEY
+        assert message.content_type == "application/json"
+        assert message.content_encoding == "utf-8"
+        assert message.delivery_mode == aio_pika.DeliveryMode.PERSISTENT
+
+        row = await read_event(event_id)
+        assert row["published_at"] is not None
+        assert row["claim_token"] is row["claimed_until"] is None
+        assert row["attempt_count"] == 1
+        assert immutable(row) == immutable(before)
+        assert await probe(broker, QUEUE_NAME) is None
+    finally:
+        async with sessions.begin() as session:
+            await session.execute(delete(OutboxEvent).where(OutboxEvent.id == event_id))
+
+
+async def test_direct_exchange_isolates_incident_and_enrichment_queues(
+    seed_events: SeedEvents,
+    broker: Broker,
+    publisher: RabbitMQPublisher,
+) -> None:
+    (incident_event_id,) = await seed_events(1)
+    enrichment_event_id = await seed_enrichment_request()
+    try:
+        result = await run_batch(publisher)
+        incident_message = await probe(broker, QUEUE_NAME)
+        enrichment_message = await probe(broker, ENRICHMENT_QUEUE_NAME)
+
+        assert result.claimed == result.published == 2
+        assert incident_message is not None
+        assert enrichment_message is not None
+        assert incident_message.message_id == str(incident_event_id)
+        assert incident_message.type == ROUTING_KEY
+        assert json.loads(incident_message.body)["event_type"] == ROUTING_KEY
+        assert enrichment_message.message_id == str(enrichment_event_id)
+        assert enrichment_message.type == ENRICHMENT_ROUTING_KEY
+        assert (
+            json.loads(enrichment_message.body)["event_type"] == ENRICHMENT_ROUTING_KEY
+        )
+    finally:
+        async with sessions.begin() as session:
+            await session.execute(
+                delete(OutboxEvent).where(OutboxEvent.id == enrichment_event_id)
+            )
 
 
 async def test_preflight_rejects_reclaimed_owner_and_insufficient_budget(

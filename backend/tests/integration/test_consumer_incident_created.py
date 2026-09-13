@@ -31,7 +31,9 @@ from signalforge.consumers.models import ProcessedEvent
 from signalforge.db.session import engine
 from signalforge.incidents.events import IncidentCreated, IncidentCreatedPayload
 from signalforge.incidents.models import Incident, IncidentSeverity
+from signalforge.outbox.models import OutboxEvent
 from signalforge.outbox.rabbitmq import (
+    ENRICHMENT_ROUTING_KEY,
     QUEUE_NAME,
     ROUTING_KEY,
     declare_topology,
@@ -113,12 +115,18 @@ async def incident_event() -> AsyncIterator[IncidentCreated]:
 
 
 @pytest.fixture(autouse=True)
-async def clean_processed_events() -> AsyncIterator[None]:
+async def clean_consumer_effects() -> AsyncIterator[None]:
     async with sessions.begin() as session:
+        await session.execute(
+            delete(OutboxEvent).where(OutboxEvent.event_type == ENRICHMENT_ROUTING_KEY)
+        )
         await session.execute(delete(ProcessedEvent))
         await session.execute(delete(IncidentTriage))
     yield
     async with sessions.begin() as session:
+        await session.execute(
+            delete(OutboxEvent).where(OutboxEvent.event_type == ENRICHMENT_ROUTING_KEY)
+        )
         await session.execute(delete(ProcessedEvent))
         await session.execute(delete(IncidentTriage))
 
@@ -167,6 +175,17 @@ async def triage_rows() -> list[IncidentTriage]:
         return list(await session.scalars(select(IncidentTriage)))
 
 
+async def enrichment_rows() -> list[OutboxEvent]:
+    async with sessions() as session:
+        return list(
+            await session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.event_type == ENRICHMENT_ROUTING_KEY
+                )
+            )
+        )
+
+
 def incoming(fake: FakeMessage) -> IncomingMessage:
     return cast(IncomingMessage, fake)
 
@@ -196,7 +215,7 @@ async def queue_has_no_ready_delivery(queue: AbstractQueue) -> bool:
     return await queue.get(no_ack=True, fail=False, timeout=0.2) is None
 
 
-async def test_first_processing_creates_receipt_and_snapshot_triage_atomically(
+async def test_first_processing_atomically_creates_all_three_durable_effects(
     incident_event: IncidentCreated,
 ) -> None:
     result = await process_event(incident_event, sessions)
@@ -204,7 +223,8 @@ async def test_first_processing_creates_receipt_and_snapshot_triage_atomically(
     assert result is ProcessingResult.PROCESSED
     receipts = await ledger_rows()
     triage = await triage_rows()
-    assert len(receipts) == len(triage) == 1
+    enrichment = await enrichment_rows()
+    assert len(receipts) == len(triage) == len(enrichment) == 1
     assert receipts[0].event_id == incident_event.event_id
     assert triage[0].event_id == incident_event.event_id
     assert triage[0].incident_id == incident_event.aggregate_id
@@ -213,6 +233,30 @@ async def test_first_processing_creates_receipt_and_snapshot_triage_atomically(
     assert triage[0].priority is TriagePriority.P2
     assert triage[0].requires_human_review is False
     assert triage[0].created_at.tzinfo is not None
+
+    request = enrichment[0]
+    assert request.id != incident_event.event_id
+    assert request.event_type == ENRICHMENT_ROUTING_KEY
+    assert request.event_version == 1
+    assert request.aggregate_id == incident_event.aggregate_id
+    assert request.occurred_at.tzinfo is not None
+    assert request.published_at is None
+    assert request.claim_token is request.claimed_until is None
+    request_payload = request.payload.copy()
+    incident_occurred_at = request_payload.pop("incident_occurred_at")
+    assert isinstance(incident_occurred_at, str)
+    assert datetime.fromisoformat(incident_occurred_at) == (
+        incident_event.payload.incident_occurred_at
+    )
+    assert request_payload == {
+        "trigger_event_id": str(incident_event.event_id),
+        "source": incident_event.payload.source,
+        "title": incident_event.payload.title,
+        "description": incident_event.payload.description,
+        "original_severity": incident_event.payload.severity.value,
+        "priority": TriagePriority.P2.value,
+        "requires_human_review": False,
+    }
 
 
 async def test_duplicate_does_not_insert_or_mutate_triage(
@@ -229,11 +273,23 @@ async def test_duplicate_does_not_insert_or_mutate_triage(
         original.requires_human_review,
         original.created_at,
     )
+    original_request = (await enrichment_rows())[0]
+    request_snapshot = (
+        original_request.id,
+        original_request.event_type,
+        original_request.event_version,
+        original_request.aggregate_id,
+        original_request.payload,
+        original_request.occurred_at,
+        original_request.created_at,
+        original_request.published_at,
+    )
 
     assert await process_event(incident_event, sessions) is ProcessingResult.DUPLICATE
 
     triage = await triage_rows()
-    assert len(await ledger_rows()) == len(triage) == 1
+    enrichment = await enrichment_rows()
+    assert len(await ledger_rows()) == len(triage) == len(enrichment) == 1
     persisted = triage[0]
     assert (
         persisted.incident_id,
@@ -244,6 +300,17 @@ async def test_duplicate_does_not_insert_or_mutate_triage(
         persisted.requires_human_review,
         persisted.created_at,
     ) == snapshot
+    persisted_request = enrichment[0]
+    assert (
+        persisted_request.id,
+        persisted_request.event_type,
+        persisted_request.event_version,
+        persisted_request.aggregate_id,
+        persisted_request.payload,
+        persisted_request.occurred_at,
+        persisted_request.created_at,
+        persisted_request.published_at,
+    ) == request_snapshot
 
 
 async def test_concurrent_processing_atomically_deduplicates_on_real_postgres(
@@ -278,8 +345,10 @@ async def test_concurrent_processing_atomically_deduplicates_on_real_postgres(
     assert rows[0].consumer_name == CONSUMER_NAME
     assert rows[0].event_id == incident_event.event_id
     triage = await triage_rows()
-    assert len(triage) == 1
+    enrichment = await enrichment_rows()
+    assert len(triage) == len(enrichment) == 1
     assert triage[0].event_id == incident_event.event_id
+    assert enrichment[0].payload["trigger_event_id"] == str(incident_event.event_id)
 
 
 async def test_triage_failure_rolls_back_receipt_and_retry_processes(
@@ -303,6 +372,7 @@ async def test_triage_failure_rolls_back_receipt_and_retry_processes(
     assert first.ack_calls == 0
     assert await ledger_rows() == []
     assert await triage_rows() == []
+    assert await enrichment_rows() == []
 
     redelivery = FakeMessage(incident_event.model_dump_json().encode())
     assert (
@@ -312,6 +382,41 @@ async def test_triage_failure_rolls_back_receipt_and_retry_processes(
     assert redelivery.ack_calls == 1
     assert len(await ledger_rows()) == 1
     assert len(await triage_rows()) == 1
+    assert len(await enrichment_rows()) == 1
+
+
+async def test_enrichment_outbox_failure_rolls_back_every_effect_then_retries(
+    incident_event: IncidentCreated,
+) -> None:
+    secret = "postgresql://user:password-must-stay-private@host/database"
+
+    def fail_enrichment_outbox(session: Session, *args: object) -> None:
+        if any(isinstance(item, OutboxEvent) for item in session.new):
+            raise OperationalError("outbox unavailable", {}, OSError(secret))
+
+    sa_event.listen(Session, "before_flush", fail_enrichment_outbox)
+    first = FakeMessage(incident_event.model_dump_json().encode())
+    try:
+        with pytest.raises(OperationalError):
+            await handle_message(incoming(first), sessions)
+    finally:
+        sa_event.remove(Session, "before_flush", fail_enrichment_outbox)
+
+    assert first.nack_calls == [True]
+    assert first.ack_calls == 0
+    assert await ledger_rows() == []
+    assert await triage_rows() == []
+    assert await enrichment_rows() == []
+
+    redelivery = FakeMessage(incident_event.model_dump_json().encode())
+    assert (
+        await handle_message(incoming(redelivery), sessions)
+        is ProcessingResult.PROCESSED
+    )
+    assert redelivery.ack_calls == 1
+    assert len(await ledger_rows()) == 1
+    assert len(await triage_rows()) == 1
+    assert len(await enrichment_rows()) == 1
 
 
 async def test_ack_observes_real_database_commit(
@@ -339,6 +444,7 @@ async def test_ack_observes_real_database_commit(
     assert fake.ack_calls == 1
     assert len(await ledger_rows()) == 1
     assert len(await triage_rows()) == 1
+    assert len(await enrichment_rows()) == 1
 
 
 async def test_ack_loss_then_redelivery_is_duplicate(
@@ -354,6 +460,7 @@ async def test_ack_loss_then_redelivery_is_duplicate(
     assert first.ack_calls == 1
     assert len(await triage_rows()) == 1
     assert len(await ledger_rows()) == 1
+    assert len(await enrichment_rows()) == 1
 
     redelivery = FakeMessage(incident_event.model_dump_json().encode())
     result = await handle_message(incoming(redelivery), sessions)
@@ -362,6 +469,7 @@ async def test_ack_loss_then_redelivery_is_duplicate(
     assert redelivery.ack_calls == 1
     assert len(await ledger_rows()) == 1
     assert len(await triage_rows()) == 1
+    assert len(await enrichment_rows()) == 1
 
 
 async def test_failed_commit_requeues_and_later_redelivery_processes(
@@ -387,6 +495,7 @@ async def test_failed_commit_requeues_and_later_redelivery_processes(
     assert first.ack_calls == 0
     assert await triage_rows() == []
     assert await ledger_rows() == []
+    assert await enrichment_rows() == []
 
     redelivery = FakeMessage(incident_event.model_dump_json().encode())
     result = await handle_message(incoming(redelivery), sessions)
@@ -395,6 +504,7 @@ async def test_failed_commit_requeues_and_later_redelivery_processes(
     assert redelivery.ack_calls == 1
     assert len(await ledger_rows()) == 1
     assert len(await triage_rows()) == 1
+    assert len(await enrichment_rows()) == 1
 
 
 async def test_real_rabbitmq_duplicate_deliveries_are_both_acked_once(
@@ -432,7 +542,8 @@ async def test_real_rabbitmq_duplicate_deliveries_are_both_acked_once(
 
     rows = await ledger_rows()
     triage = await triage_rows()
-    assert len(triage) == 1
+    enrichment = await enrichment_rows()
+    assert len(triage) == len(enrichment) == 1
     assert triage[0].event_id == incident_event.event_id
     assert triage[0].incident_id == incident_event.aggregate_id
     assert (
@@ -477,3 +588,4 @@ async def test_real_malformed_message_is_rejected_without_requeue(
 
     assert await ledger_rows() == []
     assert await triage_rows() == []
+    assert await enrichment_rows() == []
