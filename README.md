@@ -94,28 +94,28 @@ podman compose ps
 
 Migrations are an explicit one-shot command and are never run by any service at
 startup. The same application image supplies the default API command, the
-Alembic CLI, and the standalone dispatcher command.
+Alembic CLI, and the standalone dispatcher and consumer commands.
 
 The API is available at <http://127.0.0.1:8000> by default. Set
 `BACKEND_PORT` to change the published host port. Compose connects the backend
 to PostgreSQL through the `postgres` service hostname, while direct host
 development continues to use the URL from `.env`.
 
-The local stack consists of PostgreSQL, the FastAPI backend, RabbitMQ, and the
-standalone dispatcher. RabbitMQ accepts AMQP connections on
+The local five-service stack consists of PostgreSQL, the FastAPI backend,
+RabbitMQ, the standalone dispatcher, and the standalone consumer. RabbitMQ
+accepts AMQP connections on
 <amqp://127.0.0.1:5672> and exposes its management UI at
 <http://127.0.0.1:15672> by default. `RABBITMQ_PORT` and
 `RABBITMQ_MANAGEMENT_PORT` override those loopback-only host ports. The example
 broker credentials are local-development defaults, not production-safe secrets;
 the broker vhost is `signalforge`.
 
-The dispatcher runs independently from FastAPI and is not part of API readiness.
-If RabbitMQ or the dispatcher is unavailable, Incident creation still commits
-the Incident and its outbox event. Pending events are published when both return.
-Delivery is at-least-once: ambiguous publisher-confirm or publish/settlement
-crash windows can cause duplicate messages, so consumers must be
-idempotent. The standalone consumer runtime described below is intentionally not
-part of the Compose stack yet.
+The workers run independently from FastAPI and are not part of API readiness. If
+RabbitMQ or either worker is unavailable, Incident creation still commits the
+Incident and its outbox event. Pending outbox events are published when the
+dispatcher and RabbitMQ return; published queue messages remain durable until the
+consumer handles them. Both workers reconnect after expected PostgreSQL or
+RabbitMQ outages without requiring an automatic container restart policy.
 
 This is a local container runtime contract, not production deployment
 infrastructure.
@@ -239,10 +239,21 @@ with a default prefetch count of one and delegates each delivery to the durable,
 idempotent handler above. PostgreSQL and RabbitMQ outages are retried with bounded
 exponential backoff and jitter. Poison messages are safely logged and consumption
 continues; `SIGTERM` and `SIGINT` stop new work and allow an active delivery a
-bounded drain period. No DLQ or Compose consumer service is provided in this
-slice, and event handling has no business side effect beyond recording the durable
-receipt.
-No AI triage is performed.
+bounded drain period. Root Compose runs the consumer as a fifth service from the
+same non-root application image used by the API and dispatcher.
+
+The complete transport path is:
+
+```text
+API -> transactional outbox -> dispatcher -> RabbitMQ -> consumer -> processed_events
+```
+
+This combines a transactional producer outbox, at-least-once RabbitMQ delivery,
+and durable consumer idempotency. Duplicate delivery is expected and safe; it is
+not exactly-once delivery. Malformed or unsupported messages are currently
+rejected without requeue and discarded because no DLQ exists yet. Recording the
+durable receipt is the only consumer effect; no AI triage or other business
+automation is performed.
 
 Publication remains outside the API request path, and API readiness remains
 PostgreSQL-only.
