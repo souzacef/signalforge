@@ -238,10 +238,10 @@ The list endpoint uses limit/offset pagination and supports exact `priority`,
 inclusive `created_from` and `created_to` bounds. Results are ordered by
 `created_at` descending and then `incident_id` descending.
 
-These endpoints are read-only. They report the source, original severity,
-priority, review requirement, event ID, and creation time persisted from the
-event snapshot; values are not recalculated from current Incident state. This
-remains deterministic baseline triage—AI-assisted triage is not implemented.
+These endpoints remain read-only and deterministic-only. They report the source,
+original severity, priority, review requirement, event ID, and creation time
+persisted from the event snapshot; values are not recalculated from current
+Incident state. Advisory AI enrichment is not exposed through the API.
 
 First-time deterministic triage also creates a durable
 `triage.enrichment.requested` v1 outbox event. Its own event ID is linked to the
@@ -252,10 +252,31 @@ transaction; duplicate Incident delivery creates no additional request.
 
 The existing confirmed dispatcher validates and publishes these requests through
 the direct `signalforge.events` exchange to the durable
-`signalforge.triage-enrichment` queue. No enrichment worker, model invocation,
-or AI result exists yet. Deterministic triage remains authoritative, and external
-AI availability cannot affect Incident creation, triage, readiness, or ACK
-semantics.
+`signalforge.triage-enrichment` queue. D3b1 adds a one-message processor foundation
+that calls configurable Gemini model `SIGNALFORGE_GEMINI_MODEL` (default
+`gemini-3.8-flash`) with schema-constrained structured output; its API key is read
+from `SIGNALFORGE_GEMINI_API_KEY`. The incident snapshot is the only model input,
+and deterministic priority and review requirements are fixed context, not AI
+outputs. Full prompts, raw provider responses, and secrets are not persisted.
+
+The processor performs the model call without holding a database transaction, then
+atomically commits the `triage-enrichment-consumer` receipt and one advisory
+`triage_enrichments` result before ACK. A committed redelivery is detected by a
+cheap receipt preflight and does not call Gemini again. Concurrent duplicates may
+both invoke Gemini before the database race is decided, but exactly one durable
+result persists; model invocation is not exactly-once. Provider or persistence
+failures cannot affect Incident creation, deterministic triage, API readiness, or
+the existing `incident.created` ACK path.
+
+Malformed or unusable AI responses are retriable and are NACKed for requeue without
+a receipt or result. Deterministic provider request or configuration rejection is
+terminal at this one-message handler layer. No enrichment DLQ exists yet; D3b2
+will own bounded operational retry, backoff, and final dead-letter handling.
+
+No long-running enrichment worker runtime or Compose service exists until D3b2,
+and enrichment results are not exposed through the API. Deterministic triage
+remains authoritative; enrichment cannot change priority, review requirements,
+Incident state, or trigger remediation.
 
 Run the standalone consumer independently of FastAPI after migrations have been
 applied and `SIGNALFORGE_RABBITMQ_URL` has been set:
@@ -281,9 +302,10 @@ API -> transactional outbox -> dispatcher -> RabbitMQ -> consumer -> processed_e
 This combines a transactional producer outbox, at-least-once RabbitMQ delivery,
 and durable consumer idempotency. Duplicate delivery is expected and safe; it is
 not exactly-once delivery. Malformed or unsupported messages are currently
-rejected without requeue and discarded because no DLQ exists yet. Triage is a
-deliberately deterministic baseline derived from the event snapshot; AI-assisted
-triage is not implemented yet.
+rejected without requeue and discarded because no DLQ exists yet.
+Triage remains the authoritative deterministic baseline derived from the event
+snapshot. D3b1 provides only a one-message advisory enrichment processor; it adds
+neither a long-running AI consumer nor AI-driven priority or remediation.
 
 Publication remains outside the API request path, and API readiness remains
 PostgreSQL-only.
