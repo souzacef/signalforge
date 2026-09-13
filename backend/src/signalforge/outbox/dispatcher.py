@@ -309,7 +309,9 @@ async def run_dispatcher(
                     stop,
                     jitter_source,
                 )
-            except SQLAlchemyError:
+            # asyncpg can expose connection-resolution failures before SQLAlchemy
+            # wraps them, so raw transport OSErrors are database outages here too.
+            except (SQLAlchemyError, OSError):
                 database_failures += 1
                 delay = _backoff_seconds(database_failures, settings, jitter_source)
                 logger.warning(

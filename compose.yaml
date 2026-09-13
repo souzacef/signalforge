@@ -1,3 +1,9 @@
+x-application-image: &application-image
+  image: signalforge-backend:local
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+
 services:
   postgres:
     image: postgres:18-alpine
@@ -19,9 +25,7 @@ services:
       start_period: 5s
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    <<: *application-image
     environment:
       SIGNALFORGE_APP_ENVIRONMENT: ${SIGNALFORGE_APP_ENVIRONMENT:-development}
       SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-signalforge}:${POSTGRES_PASSWORD:-signalforge-local}@postgres:5432/${POSTGRES_DB:-signalforge}
@@ -43,5 +47,42 @@ services:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
 
+  rabbitmq:
+    image: rabbitmq:4.3.5-management-alpine
+    user: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-signalforge}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-signalforge-local}
+      RABBITMQ_DEFAULT_VHOST: signalforge
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - signalforge-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test:
+        - CMD
+        - rabbitmq-diagnostics
+        - -q
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  dispatcher:
+    <<: *application-image
+    command:
+      - python
+      - -m
+      - signalforge.outbox.dispatcher
+    environment:
+      SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-signalforge}:${POSTGRES_PASSWORD:-signalforge-local}@postgres:5432/${POSTGRES_DB:-signalforge}
+      SIGNALFORGE_RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-signalforge}:${RABBITMQ_DEFAULT_PASS:-signalforge-local}@rabbitmq:5672/signalforge
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   signalforge-postgres-data:
+  signalforge-rabbitmq-data:
