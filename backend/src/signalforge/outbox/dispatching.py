@@ -56,6 +56,9 @@ class DispatchErrorCode(StrEnum):
 
     DISPATCH_FAILED = "dispatch_failed"
     DISPATCH_TIMEOUT = "dispatch_timeout"
+    INVALID_EVENT = "invalid_event"
+    PUBLISH_TIMEOUT = "publish_timeout"
+    UNROUTABLE = "unroutable"
 
 
 async def claim_pending(

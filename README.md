@@ -177,11 +177,20 @@ publisher, requiring the caller to create a replacement. Publication has an
 explicit timeout covering readiness and confirmation; failure cleanup can add up
 to two bounded resource-close budgets (five seconds each by default).
 
-There is no integrated long-running dispatcher loop or end-to-end asynchronous
-processing yet. Once dispatcher orchestration lands, delivery will be at-least-once:
-ambiguous outcomes and publish/commit crash windows can cause duplicates. Claims
-fence database settlement, not external delivery, and do not provide exactly-once
-delivery. API readiness remains PostgreSQL-only.
+One-shot dispatch orchestration can claim a batch, commit those claims, and process
+each event sequentially through preflight ownership, confirmed publication, and
+conditional settlement. Each preflight and settlement uses a fresh short database
+transaction, so PostgreSQL locks are never held while awaiting RabbitMQ. Retries
+preserve the durable event ID. An invalid stored event is retained with a visible
+safe error code and a 24-hour retry delay for operator intervention. An ambiguous
+publication stops the batch and conditionally releases its unstarted claims.
+
+There is no long-running dispatcher process or end-to-end asynchronous processing
+yet. Once runtime orchestration lands, delivery will be at-least-once: ambiguous
+outcomes and publish/settlement crash windows can cause duplicates. Claims fence
+database settlement, not external delivery, and do not provide exactly-once
+delivery. Publication remains outside the API request path, and API readiness
+remains PostgreSQL-only.
 
 ## Local authentication
 
