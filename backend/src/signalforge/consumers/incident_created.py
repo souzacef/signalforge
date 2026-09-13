@@ -1,8 +1,10 @@
 """Process one incident.created v1 delivery; no consumer loop or broker setup."""
 
 import json
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
+from uuid import uuid4
 
 from aio_pika import IncomingMessage
 from pydantic import ValidationError
@@ -12,6 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from signalforge.consumers.models import ProcessedEvent
 from signalforge.incidents.events import IncidentCreated
+from signalforge.outbox.models import OutboxEvent
+from signalforge.triage.events import (
+    TriageEnrichmentRequested,
+    TriageEnrichmentRequestedPayload,
+)
 from signalforge.triage.models import IncidentTriage
 from signalforge.triage.rules import determine_triage
 
@@ -65,7 +72,7 @@ async def process_event(
     event: IncidentCreated,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> ProcessingResult:
-    """Atomically commit the receipt and first deterministic triage result."""
+    """Atomically commit receipt, triage, and its enrichment-request intent."""
     async with session_factory.begin() as session:
         inserted_id = await session.scalar(
             insert(ProcessedEvent)
@@ -88,14 +95,41 @@ async def process_event(
             return ProcessingResult.DUPLICATE
 
         decision = determine_triage(event.payload.severity)
-        session.add(
-            IncidentTriage(
-                incident_id=event.aggregate_id,
-                event_id=event.event_id,
+        triage = IncidentTriage(
+            incident_id=event.aggregate_id,
+            event_id=event.event_id,
+            source=event.payload.source,
+            original_severity=event.payload.severity,
+            priority=decision.priority,
+            requires_human_review=decision.requires_human_review,
+        )
+        session.add(triage)
+        # Ensure the outbox failure seam occurs after both earlier inserts.
+        await session.flush()
+
+        enrichment_event = TriageEnrichmentRequested(
+            event_id=uuid4(),
+            occurred_at=datetime.now(UTC),
+            aggregate_id=event.aggregate_id,
+            payload=TriageEnrichmentRequestedPayload(
+                trigger_event_id=event.event_id,
                 source=event.payload.source,
+                title=event.payload.title,
+                description=event.payload.description,
                 original_severity=event.payload.severity,
                 priority=decision.priority,
                 requires_human_review=decision.requires_human_review,
+                incident_occurred_at=event.payload.incident_occurred_at,
+            ),
+        )
+        session.add(
+            OutboxEvent(
+                id=enrichment_event.event_id,
+                event_type=enrichment_event.event_type,
+                event_version=enrichment_event.event_version,
+                aggregate_id=enrichment_event.aggregate_id,
+                payload=enrichment_event.payload.model_dump(mode="json"),
+                occurred_at=enrichment_event.occurred_at,
             )
         )
     return ProcessingResult.PROCESSED

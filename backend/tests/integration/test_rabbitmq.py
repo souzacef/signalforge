@@ -21,6 +21,8 @@ from signalforge.db.session import engine
 from signalforge.outbox.dispatching import ClaimSnapshot, claim_pending, settle_success
 from signalforge.outbox.models import OutboxEvent
 from signalforge.outbox.rabbitmq import (
+    ENRICHMENT_QUEUE_NAME,
+    ENRICHMENT_ROUTING_KEY,
     EXCHANGE_NAME,
     QUEUE_NAME,
     ROUTING_KEY,
@@ -214,10 +216,24 @@ async def test_topology_is_idempotent_and_usable_across_startups(
             f"/api/bindings/{broker.vhost}/e/{EXCHANGE_NAME}/q/{QUEUE_NAME}"
         )
     ).json()
+    enrichment_queue = (
+        await broker.api.get(f"/api/queues/{broker.vhost}/{ENRICHMENT_QUEUE_NAME}")
+    ).json()
+    enrichment_bindings = (
+        await broker.api.get(
+            f"/api/bindings/{broker.vhost}/e/{EXCHANGE_NAME}/q/{ENRICHMENT_QUEUE_NAME}"
+        )
+    ).json()
     assert exchange["type"] == "direct" and exchange["durable"] is True
     assert queue["type"] == "classic" and queue["durable"] is True
     assert queue["auto_delete"] is queue["exclusive"] is False
-    assert [binding["routing_key"] for binding in bindings] == ["incident.created"]
+    assert [binding["routing_key"] for binding in bindings] == [ROUTING_KEY]
+    assert enrichment_queue["type"] == "classic"
+    assert enrichment_queue["durable"] is True
+    assert enrichment_queue["auto_delete"] is enrichment_queue["exclusive"] is False
+    assert [binding["routing_key"] for binding in enrichment_bindings] == [
+        ENRICHMENT_ROUTING_KEY
+    ]
 
 
 async def test_incompatible_topology_is_not_repaired(broker: Broker) -> None:
