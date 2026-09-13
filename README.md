@@ -136,6 +136,10 @@ The API exposes:
   incident; requires an `operator` or `admin` bearer token.
 - `POST /api/v1/incidents/{incident_id}/resolve` — resolves an acknowledged
   incident; requires an `operator` or `admin` bearer token.
+- `GET /api/v1/incidents/{incident_id}/enrichments` — lists persisted advisory
+  enrichment snapshots for one Incident; available to all authenticated roles.
+- `GET /api/v1/enrichments` — lists persisted advisory enrichment snapshots
+  globally; available to all authenticated roles.
 - `POST /api/v1/auth/token` — authenticates an email and password.
 - `GET /api/v1/auth/me` — returns the authenticated user.
 
@@ -242,7 +246,7 @@ inclusive `created_from` and `created_to` bounds. Results are ordered by
 These endpoints remain read-only and deterministic-only. They report the source,
 original severity, priority, review requirement, event ID, and creation time
 persisted from the event snapshot; values are not recalculated from current
-Incident state. Advisory AI enrichment is not exposed through the API.
+Incident state. Advisory AI enrichment remains a separate resource.
 
 First-time deterministic triage also creates a durable
 `triage.enrichment.requested` v1 outbox event. Its own event ID is linked to the
@@ -301,8 +305,23 @@ podman compose --profile ai up -d
 Normal `podman compose up -d` does not start the enrichment worker and does not
 require Gemini credentials. Starting the `ai` profile without a key fails only the
 enrichment worker settings validation; the deterministic core remains available.
-AI output remains advisory and is not exposed through the API. It cannot change
-priority, review requirements, Incident state, or trigger remediation.
+AI output remains advisory. It cannot change priority, review requirements,
+Incident state, or trigger remediation.
+
+Persisted enrichment results are readable through
+`GET /api/v1/incidents/{incident_id}/enrichments` and
+`GET /api/v1/enrichments` without invoking Gemini. Both endpoints return
+historical advisory snapshots ordered by creation time and request event ID
+descending, with `limit` and `offset` pagination. The global list supports exact
+`incident_id`, `category`, `provider`, and `model` filters plus inclusive
+`created_from` and `created_to` bounds; the Incident-scoped list supports the same
+filters except `incident_id`. Text filters are trimmed and exact.
+
+Multiple results per Incident are supported, and an existing Incident with no
+completed result returns an empty collection. The HTTP request path never calls
+Gemini or inspects worker, broker, outbox, or processing state. API availability
+remains independent of Gemini and the enrichment worker; deterministic triage
+remains separate and authoritative.
 
 Run the standalone consumer independently of FastAPI after migrations have been
 applied and `SIGNALFORGE_RABBITMQ_URL` has been set:
