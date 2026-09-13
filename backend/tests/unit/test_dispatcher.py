@@ -353,7 +353,9 @@ async def test_retired_publisher_is_closed_and_replaced_before_next_batch(
     assert engine.dispose_calls == 1
 
 
+@pytest.mark.parametrize("raw_driver_error", [False, True])
 async def test_transient_database_failure_backs_off_and_remains_interruptible(
+    raw_driver_error: bool,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -367,7 +369,10 @@ async def test_transient_database_failure_backs_off_and_remains_interruptible(
         return cast(RabbitMQPublisher, publisher)
 
     async def dispatch_once(*args: object) -> DispatchBatchResult:
-        raise OperationalError("statement unavailable", {}, OSError(secret))
+        error = OSError(secret)
+        if raw_driver_error:
+            raise error
+        raise OperationalError("statement unavailable", {}, error)
 
     async def wait_for_stop(event: asyncio.Event, delay: float) -> bool:
         delays.append(delay)

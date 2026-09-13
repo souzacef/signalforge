@@ -3,16 +3,16 @@
 SignalForge is a portfolio project for exploring incident automation and
 AI-assisted operations. Its current backend provides an authenticated Incident
 API backed by PostgreSQL, with role-based access control, deterministic lifecycle
-transitions, and filtered, paginated listing.
+transitions, filtered paginated listing, and durable asynchronous publication of
+new-Incident events to RabbitMQ.
 
 The application begins as a modular monolith. This keeps deployment and local
 development straightforward while domain boundaries are still emerging, without
 preventing modules from being separated later when real operational needs justify
 it.
 
-Integrated event processing, AI/RAG, observability, Angular, Kubernetes, Helm,
-Terraform, and AWS are planned directions. They are not implemented in this
-phase.
+Event consumption, AI/RAG, observability, Angular, Kubernetes, Helm, Terraform,
+and AWS are planned directions. They are not implemented in this phase.
 
 ## Prerequisites
 
@@ -87,22 +87,36 @@ for the equivalent Docker workflow:
 podman compose build backend
 podman compose up -d postgres
 podman compose run --rm backend alembic upgrade head
-podman compose up -d backend
+podman compose up -d
 podman compose ps
 ```
 
-Migrations are an explicit one-shot command and are never run by the image or
-API startup. The same backend image supplies both the default API command and
-the Alembic CLI; later processes can override the command without requiring a
-different image.
+Migrations are an explicit one-shot command and are never run by any service at
+startup. The same application image supplies the default API command, the
+Alembic CLI, and the standalone dispatcher command.
 
 The API is available at <http://127.0.0.1:8000> by default. Set
 `BACKEND_PORT` to change the published host port. Compose connects the backend
 to PostgreSQL through the `postgres` service hostname, while direct host
 development continues to use the URL from `.env`.
 
+The local stack consists of PostgreSQL, the FastAPI backend, RabbitMQ, and the
+standalone dispatcher. RabbitMQ accepts AMQP connections on
+<amqp://127.0.0.1:5672> and exposes its management UI at
+<http://127.0.0.1:15672> by default. `RABBITMQ_PORT` and
+`RABBITMQ_MANAGEMENT_PORT` override those loopback-only host ports. The example
+broker credentials are local-development defaults, not production-safe secrets;
+the broker vhost is `signalforge`.
+
+The dispatcher runs independently from FastAPI and is not part of API readiness.
+If RabbitMQ or the dispatcher is unavailable, Incident creation still commits
+the Incident and its outbox event. Pending events are published when both return.
+Delivery is at-least-once: ambiguous publisher-confirm or publish/settlement
+crash windows can cause duplicate messages, so future consumers must be
+idempotent. No event consumer exists yet.
+
 This is a local container runtime contract, not production deployment
-infrastructure. RabbitMQ and worker services are not included yet.
+infrastructure.
 
 The API exposes:
 
@@ -202,10 +216,11 @@ before cancellation.
 
 Delivery is at-least-once: ambiguous outcomes and publish/settlement crash windows
 can cause duplicates. Claims fence database settlement, not external delivery,
-and do not provide exactly-once delivery. The dispatcher is not wired into root
-Compose yet, and no event consumer exists, so end-to-end event-driven processing
-is not complete. Publication remains outside the API request path, and API
-readiness remains PostgreSQL-only.
+and do not provide exactly-once delivery. Root Compose runs the dispatcher as a
+separate process from the same application image as FastAPI. No event consumer
+exists, so end-to-end event handling stops at durable RabbitMQ publication.
+Publication remains outside the API request path, and API readiness remains
+PostgreSQL-only.
 
 ## Local authentication
 
@@ -337,7 +352,6 @@ uv run mypy src
 
 To apply formatting, run `uv run ruff format .`.
 
-Stop the local database from the repository root with either
-`podman compose down` or `docker compose down`. The named volume preserves its
-data; add `--volumes` only when you intentionally want to delete local database
-data.
+Stop the local stack from the repository root with either `podman compose down`
+or `docker compose down`. Named volumes preserve PostgreSQL and RabbitMQ data;
+add `--volumes` only when you intentionally want to delete local data.
