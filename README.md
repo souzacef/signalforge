@@ -113,7 +113,7 @@ If RabbitMQ or the dispatcher is unavailable, Incident creation still commits
 the Incident and its outbox event. Pending events are published when both return.
 Delivery is at-least-once: ambiguous publisher-confirm or publish/settlement
 crash windows can cause duplicate messages, so future consumers must be
-idempotent. No event consumer exists yet.
+idempotent. No long-running consumer service exists yet.
 
 This is a local container runtime contract, not production deployment
 infrastructure.
@@ -217,8 +217,15 @@ before cancellation.
 Delivery is at-least-once: ambiguous outcomes and publish/settlement crash windows
 can cause duplicates. Claims fence database settlement, not external delivery,
 and do not provide exactly-once delivery. Root Compose runs the dispatcher as a
-separate process from the same application image as FastAPI. No event consumer
-exists, so end-to-end event handling stops at durable RabbitMQ publication.
+separate process from the same application image as FastAPI.
+
+The consumer-side foundation validates `incident.created` v1 messages and records
+one durable processing receipt per event for the stable logical consumer. The
+receipt commits before ACK, so broker redelivery after ACK loss is safely treated
+as a duplicate. Malformed and unsupported messages are terminally rejected and
+discarded because no DLQ exists yet; transient database failures are requeued.
+There is no standalone long-running consumer runtime, and full event handling
+still stops at durable RabbitMQ publication.
 Publication remains outside the API request path, and API readiness remains
 PostgreSQL-only.
 
