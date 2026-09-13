@@ -231,6 +231,18 @@ nor mutates triage. Malformed and unsupported messages are terminally rejected
 and discarded because no DLQ exists yet; transient database failures are
 requeued.
 
+Authenticated viewers, operators, and administrators can read persisted triage
+through `GET /api/v1/incidents/{incident_id}/triage` and `GET /api/v1/triage`.
+The list endpoint uses limit/offset pagination and supports exact `priority`,
+`original_severity`, `requires_human_review`, and `source` filters plus
+inclusive `created_from` and `created_to` bounds. Results are ordered by
+`created_at` descending and then `incident_id` descending.
+
+These endpoints are read-only. They report the source, original severity,
+priority, review requirement, event ID, and creation time persisted from the
+event snapshot; values are not recalculated from current Incident state. This
+remains deterministic baseline triage—AI-assisted triage is not implemented.
+
 Run the standalone consumer independently of FastAPI after migrations have been
 applied and `SIGNALFORGE_RABBITMQ_URL` has been set:
 
