@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from signalforge.consumers import models as consumer_models  # noqa: F401
 from signalforge.core.config import get_settings
 from signalforge.db.base import Base
+from signalforge.enrichment import models as enrichment_models  # noqa: F401
 from signalforge.incidents import models as incident_models  # noqa: F401
 from signalforge.outbox import models as outbox_models  # noqa: F401
 from signalforge.triage import models as triage_models  # noqa: F401

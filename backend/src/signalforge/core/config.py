@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, PostgresDsn, SecretStr
+from pydantic import Field, PostgresDsn, SecretStr, StringConstraints
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,28 @@ class Settings(DatabaseSettings):
     access_token_expire_minutes: Annotated[int, Field(gt=0)] = 30
 
 
+class EnrichmentSettings(BaseSettings):
+    """Gemini settings loaded only by the enrichment processor."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="SIGNALFORGE_",
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    gemini_api_key: Annotated[SecretStr, Field(min_length=1)]
+    gemini_model: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+    ] = "gemini-3.8-flash"
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]
+
+
+@lru_cache
+def get_enrichment_settings() -> EnrichmentSettings:
+    return EnrichmentSettings()  # type: ignore[call-arg]
