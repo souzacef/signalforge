@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Backend foundation for the SignalForge incident automation platform"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "aio-pika>=10.0.1,<11",
     "alembic>=1.16,<2",
     "asyncpg>=0.30,<1",
     "fastapi>=0.141,<1",

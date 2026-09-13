@@ -10,7 +10,7 @@ development straightforward while domain boundaries are still emerging, without
 preventing modules from being separated later when real operational needs justify
 it.
 
-Event-driven messaging, AI/RAG, observability, Angular, Kubernetes, Helm,
+Integrated event processing, AI/RAG, observability, Angular, Kubernetes, Helm,
 Terraform, and AWS are planned directions. They are not implemented in this
 phase.
 
@@ -155,8 +155,8 @@ pagination. Full-text search is not implemented.
 
 Successful new Incident creation atomically commits the Incident and one durable
 `incident.created` v1 outbox intent in PostgreSQL. The intent stores an immutable
-creation snapshot; this is persistence only, with no RabbitMQ publisher or
-dispatcher yet. Historical incidents are not backfilled, and lifecycle transitions
+creation snapshot; publication is not in the API request path. Historical
+incidents are not backfilled, and lifecycle transitions
 do not emit events yet. The Incident table remains the source of truth; the outbox
 is delivery infrastructure, not event sourcing.
 
@@ -165,8 +165,23 @@ scheduling. Each committed claim increments the attempt count, even if its owner
 stops before using it; rolled-back claims do not count. Claim, settlement, and
 release helpers leave commit/rollback to the caller's short database transaction.
 Release preserves the due time, making already-due work immediately eligible.
-RabbitMQ publication and a dispatcher loop are not implemented. Claims fence
-database settlement, not external delivery, and do not provide exactly-once delivery.
+RabbitMQ publisher/topology support reconstructs the stored `incident.created` v1
+envelope and sends persistent JSON messages with mandatory routing and publisher
+confirms. In a caller-provisioned vhost (normally `signalforge`), it declares the
+durable direct exchange `signalforge.events`, durable classic queue
+`signalforge.incident-events`, and `incident.created` binding.
+
+The publisher does not query or settle PostgreSQL state. Its robust connection is
+reused across publications; a timeout or ambiguous transport failure retires the
+publisher, requiring the caller to create a replacement. Publication has an
+explicit timeout covering readiness and confirmation; failure cleanup can add up
+to two bounded resource-close budgets (five seconds each by default).
+
+There is no integrated long-running dispatcher loop or end-to-end asynchronous
+processing yet. Once dispatcher orchestration lands, delivery will be at-least-once:
+ambiguous outcomes and publish/commit crash windows can cause duplicates. Claims
+fence database settlement, not external delivery, and do not provide exactly-once
+delivery. API readiness remains PostgreSQL-only.
 
 ## Local authentication
 
@@ -245,6 +260,47 @@ The same safety guard applies when selecting only fast tests:
 ```sh
 SIGNALFORGE_DATABASE_URL=postgresql+asyncpg://signalforge:password@localhost:5432/signalforge_test \
   uv run pytest -m "not integration"
+```
+
+### RabbitMQ publisher tests
+
+Broker tests require a dedicated RabbitMQ `4.3.5-management-alpine` broker in
+addition to the explicit `signalforge_test` PostgreSQL URL above. They create and
+delete a unique `signalforge_test_...` vhost per test, using management permissions.
+Without `SIGNALFORGE_TEST_RABBITMQ_URL`, these broker tests are explicitly skipped;
+if configured, connection or configuration failures fail the tests.
+
+For disposable local validation (not permanent Compose wiring):
+
+```sh
+export RABBITMQ_DEFAULT_USER=signalforge_test
+export RABBITMQ_DEFAULT_PASS="$(openssl rand -hex 24)"
+export RABBITMQ_DEFAULT_VHOST=signalforge_test_local
+podman run -d --name signalforge-rabbitmq-test --hostname signalforge-rabbitmq-test \
+  -p 127.0.0.1:5673:5672 -p 127.0.0.1:15673:15672 \
+  -e RABBITMQ_DEFAULT_USER -e RABBITMQ_DEFAULT_PASS -e RABBITMQ_DEFAULT_VHOST \
+  -v signalforge-rabbitmq-test-data:/var/lib/rabbitmq \
+  rabbitmq:4.3.5-management-alpine
+podman exec signalforge-rabbitmq-test rabbitmq-diagnostics -q check_running
+```
+
+Wait until the readiness command succeeds, then from `backend/`, retaining the
+explicit PostgreSQL test URL in the environment:
+
+```sh
+export SIGNALFORGE_TEST_RABBITMQ_URL="amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@127.0.0.1:5673/${RABBITMQ_DEFAULT_VHOST}"
+export SIGNALFORGE_TEST_RABBITMQ_MANAGEMENT_URL=http://127.0.0.1:15673
+uv run pytest
+```
+
+Remove only these disposable broker resources after validation; this deletes their
+test data. Do not use these commands against a developer broker:
+
+```sh
+podman rm -f signalforge-rabbitmq-test
+podman volume rm signalforge-rabbitmq-test-data
+unset SIGNALFORGE_TEST_RABBITMQ_URL SIGNALFORGE_TEST_RABBITMQ_MANAGEMENT_URL
+unset RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_DEFAULT_VHOST
 ```
 
 Formatting, linting, and type checking:
