@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from signalforge.consumers.models import ProcessedEvent
 from signalforge.incidents.events import IncidentCreated
+from signalforge.triage.models import IncidentTriage
+from signalforge.triage.rules import determine_triage
 
 CONSUMER_NAME = "incident-created-consumer"
 
@@ -63,7 +65,7 @@ async def process_event(
     event: IncidentCreated,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> ProcessingResult:
-    """Commit the receipt before reporting success; concurrent inserts are atomic."""
+    """Atomically commit the receipt and first deterministic triage result."""
     async with session_factory.begin() as session:
         inserted_id = await session.scalar(
             insert(ProcessedEvent)
@@ -82,11 +84,21 @@ async def process_event(
             )
             .returning(ProcessedEvent.event_id)
         )
-    return (
-        ProcessingResult.PROCESSED
-        if inserted_id is not None
-        else ProcessingResult.DUPLICATE
-    )
+        if inserted_id is None:
+            return ProcessingResult.DUPLICATE
+
+        decision = determine_triage(event.payload.severity)
+        session.add(
+            IncidentTriage(
+                incident_id=event.aggregate_id,
+                event_id=event.event_id,
+                source=event.payload.source,
+                original_severity=event.payload.severity,
+                priority=decision.priority,
+                requires_human_review=decision.requires_human_review,
+            )
+        )
+    return ProcessingResult.PROCESSED
 
 
 async def handle_message(

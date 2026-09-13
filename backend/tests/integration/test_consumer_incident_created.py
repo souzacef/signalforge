@@ -30,12 +30,13 @@ from signalforge.consumers.incident_created import (
 from signalforge.consumers.models import ProcessedEvent
 from signalforge.db.session import engine
 from signalforge.incidents.events import IncidentCreated, IncidentCreatedPayload
-from signalforge.incidents.models import IncidentSeverity
+from signalforge.incidents.models import Incident, IncidentSeverity
 from signalforge.outbox.rabbitmq import (
     QUEUE_NAME,
     ROUTING_KEY,
     declare_topology,
 )
+from signalforge.triage.models import IncidentTriage, TriagePriority
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -78,8 +79,8 @@ class FakeMessage:
 
 
 @pytest.fixture
-def incident_event() -> IncidentCreated:
-    return IncidentCreated(
+async def incident_event() -> AsyncIterator[IncidentCreated]:
+    event = IncidentCreated(
         event_id=uuid4(),
         occurred_at=datetime(2026, 9, 13, 12, tzinfo=UTC),
         aggregate_id=uuid4(),
@@ -91,15 +92,35 @@ def incident_event() -> IncidentCreated:
             incident_occurred_at=datetime(2026, 9, 13, 11, tzinfo=UTC),
         ),
     )
+    async with sessions.begin() as session:
+        session.add(
+            Incident(
+                id=event.aggregate_id,
+                source=event.payload.source,
+                title=event.payload.title,
+                description=event.payload.description,
+                severity=event.payload.severity,
+                occurred_at=event.payload.incident_occurred_at,
+            )
+        )
+    try:
+        yield event
+    finally:
+        async with sessions.begin() as session:
+            await session.execute(
+                delete(Incident).where(Incident.id == event.aggregate_id)
+            )
 
 
 @pytest.fixture(autouse=True)
 async def clean_processed_events() -> AsyncIterator[None]:
     async with sessions.begin() as session:
         await session.execute(delete(ProcessedEvent))
+        await session.execute(delete(IncidentTriage))
     yield
     async with sessions.begin() as session:
         await session.execute(delete(ProcessedEvent))
+        await session.execute(delete(IncidentTriage))
 
 
 @pytest.fixture
@@ -141,6 +162,11 @@ async def ledger_rows() -> list[ProcessedEvent]:
         return list(await session.scalars(select(ProcessedEvent)))
 
 
+async def triage_rows() -> list[IncidentTriage]:
+    async with sessions() as session:
+        return list(await session.scalars(select(IncidentTriage)))
+
+
 def incoming(fake: FakeMessage) -> IncomingMessage:
     return cast(IncomingMessage, fake)
 
@@ -168,6 +194,56 @@ async def publish(
 
 async def queue_has_no_ready_delivery(queue: AbstractQueue) -> bool:
     return await queue.get(no_ack=True, fail=False, timeout=0.2) is None
+
+
+async def test_first_processing_creates_receipt_and_snapshot_triage_atomically(
+    incident_event: IncidentCreated,
+) -> None:
+    result = await process_event(incident_event, sessions)
+
+    assert result is ProcessingResult.PROCESSED
+    receipts = await ledger_rows()
+    triage = await triage_rows()
+    assert len(receipts) == len(triage) == 1
+    assert receipts[0].event_id == incident_event.event_id
+    assert triage[0].event_id == incident_event.event_id
+    assert triage[0].incident_id == incident_event.aggregate_id
+    assert triage[0].source == incident_event.payload.source
+    assert triage[0].original_severity is incident_event.payload.severity
+    assert triage[0].priority is TriagePriority.P2
+    assert triage[0].requires_human_review is False
+    assert triage[0].created_at.tzinfo is not None
+
+
+async def test_duplicate_does_not_insert_or_mutate_triage(
+    incident_event: IncidentCreated,
+) -> None:
+    assert await process_event(incident_event, sessions) is ProcessingResult.PROCESSED
+    original = (await triage_rows())[0]
+    snapshot = (
+        original.incident_id,
+        original.event_id,
+        original.source,
+        original.original_severity,
+        original.priority,
+        original.requires_human_review,
+        original.created_at,
+    )
+
+    assert await process_event(incident_event, sessions) is ProcessingResult.DUPLICATE
+
+    triage = await triage_rows()
+    assert len(await ledger_rows()) == len(triage) == 1
+    persisted = triage[0]
+    assert (
+        persisted.incident_id,
+        persisted.event_id,
+        persisted.source,
+        persisted.original_severity,
+        persisted.priority,
+        persisted.requires_human_review,
+        persisted.created_at,
+    ) == snapshot
 
 
 async def test_concurrent_processing_atomically_deduplicates_on_real_postgres(
@@ -201,6 +277,41 @@ async def test_concurrent_processing_atomically_deduplicates_on_real_postgres(
     assert len(rows) == 1
     assert rows[0].consumer_name == CONSUMER_NAME
     assert rows[0].event_id == incident_event.event_id
+    triage = await triage_rows()
+    assert len(triage) == 1
+    assert triage[0].event_id == incident_event.event_id
+
+
+async def test_triage_failure_rolls_back_receipt_and_retry_processes(
+    incident_event: IncidentCreated,
+) -> None:
+    secret = "postgresql://user:password-must-stay-private@host/database"
+
+    def fail_triage(session: Session, *args: object) -> None:
+        if any(isinstance(item, IncidentTriage) for item in session.new):
+            raise OperationalError("triage unavailable", {}, OSError(secret))
+
+    sa_event.listen(Session, "before_flush", fail_triage)
+    first = FakeMessage(incident_event.model_dump_json().encode())
+    try:
+        with pytest.raises(OperationalError):
+            await handle_message(incoming(first), sessions)
+    finally:
+        sa_event.remove(Session, "before_flush", fail_triage)
+
+    assert first.nack_calls == [True]
+    assert first.ack_calls == 0
+    assert await ledger_rows() == []
+    assert await triage_rows() == []
+
+    redelivery = FakeMessage(incident_event.model_dump_json().encode())
+    assert (
+        await handle_message(incoming(redelivery), sessions)
+        is ProcessingResult.PROCESSED
+    )
+    assert redelivery.ack_calls == 1
+    assert len(await ledger_rows()) == 1
+    assert len(await triage_rows()) == 1
 
 
 async def test_ack_observes_real_database_commit(
@@ -227,6 +338,7 @@ async def test_ack_observes_real_database_commit(
     assert result is ProcessingResult.PROCESSED
     assert fake.ack_calls == 1
     assert len(await ledger_rows()) == 1
+    assert len(await triage_rows()) == 1
 
 
 async def test_ack_loss_then_redelivery_is_duplicate(
@@ -240,6 +352,7 @@ async def test_ack_loss_then_redelivery_is_duplicate(
         await handle_message(incoming(first), sessions)
 
     assert first.ack_calls == 1
+    assert len(await triage_rows()) == 1
     assert len(await ledger_rows()) == 1
 
     redelivery = FakeMessage(incident_event.model_dump_json().encode())
@@ -248,6 +361,7 @@ async def test_ack_loss_then_redelivery_is_duplicate(
     assert result is ProcessingResult.DUPLICATE
     assert redelivery.ack_calls == 1
     assert len(await ledger_rows()) == 1
+    assert len(await triage_rows()) == 1
 
 
 async def test_failed_commit_requeues_and_later_redelivery_processes(
@@ -271,6 +385,7 @@ async def test_failed_commit_requeues_and_later_redelivery_processes(
 
     assert first.nack_calls == [True]
     assert first.ack_calls == 0
+    assert await triage_rows() == []
     assert await ledger_rows() == []
 
     redelivery = FakeMessage(incident_event.model_dump_json().encode())
@@ -279,6 +394,7 @@ async def test_failed_commit_requeues_and_later_redelivery_processes(
     assert result is ProcessingResult.PROCESSED
     assert redelivery.ack_calls == 1
     assert len(await ledger_rows()) == 1
+    assert len(await triage_rows()) == 1
 
 
 async def test_real_rabbitmq_duplicate_deliveries_are_both_acked_once(
@@ -297,6 +413,16 @@ async def test_real_rabbitmq_duplicate_deliveries_are_both_acked_once(
         first = await queue.get(no_ack=False, fail=True, timeout=5)
         second = await queue.get(no_ack=False, fail=True, timeout=5)
         assert await handle_message(first, sessions) is ProcessingResult.PROCESSED
+        original_triage = (await triage_rows())[0]
+        original_snapshot = (
+            original_triage.incident_id,
+            original_triage.event_id,
+            original_triage.source,
+            original_triage.original_severity,
+            original_triage.priority,
+            original_triage.requires_human_review,
+            original_triage.created_at,
+        )
         assert await handle_message(second, sessions) is ProcessingResult.DUPLICATE
 
         assert first.processed and second.processed
@@ -305,6 +431,19 @@ async def test_real_rabbitmq_duplicate_deliveries_are_both_acked_once(
         await connection.close()
 
     rows = await ledger_rows()
+    triage = await triage_rows()
+    assert len(triage) == 1
+    assert triage[0].event_id == incident_event.event_id
+    assert triage[0].incident_id == incident_event.aggregate_id
+    assert (
+        triage[0].incident_id,
+        triage[0].event_id,
+        triage[0].source,
+        triage[0].original_severity,
+        triage[0].priority,
+        triage[0].requires_human_review,
+        triage[0].created_at,
+    ) == original_snapshot
     assert len(rows) == 1
     receipt = rows[0]
     assert receipt.consumer_name == CONSUMER_NAME
@@ -337,3 +476,4 @@ async def test_real_malformed_message_is_rejected_without_requeue(
         await connection.close()
 
     assert await ledger_rows() == []
+    assert await triage_rows() == []

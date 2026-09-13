@@ -26,8 +26,9 @@ from signalforge.consumers.models import ProcessedEvent
 from signalforge.consumers.runtime import ConsumerBroker, ConsumerSettings, run_consumer
 from signalforge.db.session import engine
 from signalforge.incidents.events import IncidentCreated, IncidentCreatedPayload
-from signalforge.incidents.models import IncidentSeverity
+from signalforge.incidents.models import Incident, IncidentSeverity
 from signalforge.outbox.rabbitmq import QUEUE_NAME, ROUTING_KEY, declare_topology
+from signalforge.triage.models import IncidentTriage
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -152,14 +153,16 @@ async def broker() -> AsyncIterator[Broker]:
 async def clean_processed_events() -> AsyncIterator[None]:
     async with sessions.begin() as session:
         await session.execute(delete(ProcessedEvent))
+        await session.execute(delete(IncidentTriage))
     yield
     async with sessions.begin() as session:
         await session.execute(delete(ProcessedEvent))
+        await session.execute(delete(IncidentTriage))
 
 
 @pytest.fixture
-def incident_event() -> IncidentCreated:
-    return IncidentCreated(
+async def incident_event() -> AsyncIterator[IncidentCreated]:
+    event = IncidentCreated(
         event_id=uuid4(),
         occurred_at=datetime(2026, 9, 13, 12, tzinfo=UTC),
         aggregate_id=uuid4(),
@@ -171,6 +174,24 @@ def incident_event() -> IncidentCreated:
             incident_occurred_at=datetime(2026, 9, 13, 11, tzinfo=UTC),
         ),
     )
+    async with sessions.begin() as session:
+        session.add(
+            Incident(
+                id=event.aggregate_id,
+                source=event.payload.source,
+                title=event.payload.title,
+                description=event.payload.description,
+                severity=event.payload.severity,
+                occurred_at=event.payload.incident_occurred_at,
+            )
+        )
+    try:
+        yield event
+    finally:
+        async with sessions.begin() as session:
+            await session.execute(
+                delete(Incident).where(Incident.id == event.aggregate_id)
+            )
 
 
 def runtime_settings(database_url: str, rabbitmq_url: str) -> ConsumerSettings:
