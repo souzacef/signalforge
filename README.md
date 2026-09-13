@@ -11,9 +11,8 @@ development straightforward while domain boundaries are still emerging, without
 preventing modules from being separated later when real operational needs justify
 it.
 
-Business event handlers beyond durable receipt recording, AI/RAG, observability,
-Angular, Kubernetes, Helm, Terraform, and AWS are planned directions. They are
-not implemented in this phase.
+RAG, observability, Angular, Kubernetes, Helm, Terraform, and AWS are planned
+directions. They are not implemented in this phase.
 
 ## Prerequisites
 
@@ -94,16 +93,18 @@ podman compose ps
 
 Migrations are an explicit one-shot command and are never run by any service at
 startup. The same application image supplies the default API command, the
-Alembic CLI, and the standalone dispatcher and consumer commands.
+Alembic CLI, and the standalone dispatcher, consumer, and enrichment-worker
+commands.
 
 The API is available at <http://127.0.0.1:8000> by default. Set
 `BACKEND_PORT` to change the published host port. Compose connects the backend
 to PostgreSQL through the `postgres` service hostname, while direct host
 development continues to use the URL from `.env`.
 
-The local five-service stack consists of PostgreSQL, the FastAPI backend,
-RabbitMQ, the standalone dispatcher, and the standalone consumer. RabbitMQ
-accepts AMQP connections on
+The default local five-service core stack consists of PostgreSQL, the FastAPI
+backend, RabbitMQ, the standalone dispatcher, and the standalone consumer. An
+optional sixth enrichment-worker service is available through the `ai` Compose
+profile. RabbitMQ accepts AMQP connections on
 <amqp://127.0.0.1:5672> and exposes its management UI at
 <http://127.0.0.1:15672> by default. `RABBITMQ_PORT` and
 `RABBITMQ_MANAGEMENT_PORT` override those loopback-only host ports. The example
@@ -111,11 +112,11 @@ broker credentials are local-development defaults, not production-safe secrets;
 the broker vhost is `signalforge`.
 
 The workers run independently from FastAPI and are not part of API readiness. If
-RabbitMQ or either worker is unavailable, Incident creation still commits the
-Incident and its outbox event. Pending outbox events are published when the
-dispatcher and RabbitMQ return; published queue messages remain durable until the
-consumer handles them. Both workers reconnect after expected PostgreSQL or
-RabbitMQ outages without requiring an automatic container restart policy.
+RabbitMQ or a worker is unavailable, Incident creation still commits the Incident
+and its outbox event. Pending outbox events are published when the dispatcher and
+RabbitMQ return; published queue messages remain durable until a consumer handles
+them. Worker runtimes reconnect after expected RabbitMQ outages without requiring
+an automatic container restart policy.
 
 This is a local container runtime contract, not production deployment
 infrastructure.
@@ -268,15 +269,40 @@ result persists; model invocation is not exactly-once. Provider or persistence
 failures cannot affect Incident creation, deterministic triage, API readiness, or
 the existing `incident.created` ACK path.
 
-Malformed or unusable AI responses are retriable and are NACKed for requeue without
-a receipt or result. Deterministic provider request or configuration rejection is
-terminal at this one-message handler layer. No enrichment DLQ exists yet; D3b2
-will own bounded operational retry, backoff, and final dead-letter handling.
+Malformed or unusable AI responses are retriable and are NACKed for requeue
+without a receipt or result. Deterministic provider request or configuration
+rejection is terminal at the one-message handler layer. The long-running worker
+applies bounded, interruptible backoff between transient attempts, but there is no
+durable bounded retry count or enrichment DLQ yet; transient messages may be
+retried repeatedly.
 
-No long-running enrichment worker runtime or Compose service exists until D3b2,
-and enrichment results are not exposed through the API. Deterministic triage
-remains authoritative; enrichment cannot change priority, review requirements,
-Incident state, or trigger remediation.
+Run the standalone enrichment worker independently of FastAPI after migrations
+have been applied and the RabbitMQ URL and Gemini API key have been set:
+
+```sh
+uv run python -m signalforge.enrichment.runtime
+```
+
+The worker consumes only `signalforge.triage-enrichment`, uses one Gemini provider
+instance across messages and broker reconnects, and defaults to sequential
+processing with prefetch one. It reconnects to RabbitMQ with bounded backoff and
+uses a separate bounded backoff after transient provider or database failures.
+`SIGTERM` and `SIGINT` stop new work, allow the active delivery up to the configured
+drain timeout, then force cancellation and close broker and database resources.
+It never runs migrations automatically.
+
+The Compose service is deliberately opt-in. Put a real
+`SIGNALFORGE_GEMINI_API_KEY` in `.env`, then add the worker to the core stack with:
+
+```sh
+podman compose --profile ai up -d
+```
+
+Normal `podman compose up -d` does not start the enrichment worker and does not
+require Gemini credentials. Starting the `ai` profile without a key fails only the
+enrichment worker settings validation; the deterministic core remains available.
+AI output remains advisory and is not exposed through the API. It cannot change
+priority, review requirements, Incident state, or trigger remediation.
 
 Run the standalone consumer independently of FastAPI after migrations have been
 applied and `SIGNALFORGE_RABBITMQ_URL` has been set:
@@ -297,6 +323,7 @@ The complete transport path is:
 
 ```text
 API -> transactional outbox -> dispatcher -> RabbitMQ -> consumer -> processed_events + incident_triage
+incident_triage -> transactional outbox -> dispatcher -> RabbitMQ -> enrichment-worker -> triage_enrichments
 ```
 
 This combines a transactional producer outbox, at-least-once RabbitMQ delivery,
@@ -304,8 +331,8 @@ and durable consumer idempotency. Duplicate delivery is expected and safe; it is
 not exactly-once delivery. Malformed or unsupported messages are currently
 rejected without requeue and discarded because no DLQ exists yet.
 Triage remains the authoritative deterministic baseline derived from the event
-snapshot. D3b1 provides only a one-message advisory enrichment processor; it adds
-neither a long-running AI consumer nor AI-driven priority or remediation.
+snapshot. The optional enrichment worker persists advisory output but adds no
+AI-driven priority or remediation.
 
 Publication remains outside the API request path, and API readiness remains
 PostgreSQL-only.
