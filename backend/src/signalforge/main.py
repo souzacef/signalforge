@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from signalforge.api.health import router as health_router
 from signalforge.auth.router import router as auth_router
 from signalforge.core.config import get_settings
+from signalforge.enrichment.router import router as enrichment_router
 from signalforge.incidents.router import router as incidents_router
 from signalforge.triage.router import router as triage_router
 
@@ -15,6 +16,7 @@ def create_app() -> FastAPI:
     application.include_router(auth_router)
     application.include_router(incidents_router)
     application.include_router(triage_router)
+    application.include_router(enrichment_router)
     return application
 
 
