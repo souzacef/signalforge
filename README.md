@@ -221,11 +221,15 @@ can cause duplicates. Claims fence database settlement, not external delivery,
 and do not provide exactly-once delivery. Root Compose runs the dispatcher as a
 separate process from the same application image as FastAPI.
 
-The consumer-side foundation validates `incident.created` v1 messages and records
-one durable processing receipt per event for the stable logical consumer. The
-receipt commits before ACK, so broker redelivery after ACK loss is safely treated
-as a duplicate. Malformed and unsupported messages are terminally rejected and
-discarded because no DLQ exists yet; transient database failures are requeued.
+The consumer validates `incident.created` v1 messages and, on first processing,
+atomically records both a durable consumer receipt and a deterministic incident
+triage snapshot. Severity maps directly to priority (`critical` -> P1, `high` ->
+P2, `medium` -> P3, `low` -> P4); critical incidents require human review and
+the other severities do not. The transaction commits before ACK, so broker
+redelivery after ACK loss is safely treated as a duplicate and neither creates
+nor mutates triage. Malformed and unsupported messages are terminally rejected
+and discarded because no DLQ exists yet; transient database failures are
+requeued.
 
 Run the standalone consumer independently of FastAPI after migrations have been
 applied and `SIGNALFORGE_RABBITMQ_URL` has been set:
@@ -245,15 +249,15 @@ same non-root application image used by the API and dispatcher.
 The complete transport path is:
 
 ```text
-API -> transactional outbox -> dispatcher -> RabbitMQ -> consumer -> processed_events
+API -> transactional outbox -> dispatcher -> RabbitMQ -> consumer -> processed_events + incident_triage
 ```
 
 This combines a transactional producer outbox, at-least-once RabbitMQ delivery,
 and durable consumer idempotency. Duplicate delivery is expected and safe; it is
 not exactly-once delivery. Malformed or unsupported messages are currently
-rejected without requeue and discarded because no DLQ exists yet. Recording the
-durable receipt is the only consumer effect; no AI triage or other business
-automation is performed.
+rejected without requeue and discarded because no DLQ exists yet. Triage is a
+deliberately deterministic baseline derived from the event snapshot; AI-assisted
+triage is not implemented yet.
 
 Publication remains outside the API request path, and API readiness remains
 PostgreSQL-only.
