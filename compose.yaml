@@ -83,6 +83,19 @@ services:
       postgres:
         condition: service_healthy
 
+  consumer:
+    <<: *application-image
+    command:
+      - python
+      - -m
+      - signalforge.consumers.runtime
+    environment:
+      SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-signalforge}:${POSTGRES_PASSWORD:-signalforge-local}@postgres:5432/${POSTGRES_DB:-signalforge}
+      SIGNALFORGE_RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-signalforge}:${RABBITMQ_DEFAULT_PASS:-signalforge-local}@rabbitmq:5672/signalforge
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   signalforge-postgres-data:
   signalforge-rabbitmq-data:
