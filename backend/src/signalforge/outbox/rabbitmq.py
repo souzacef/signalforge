@@ -177,6 +177,11 @@ class RabbitMQPublisher:
         # aiormq correlates returns by message_id: do not overlap same-ID retries.
         self._publish_lock = asyncio.Lock()
 
+    @property
+    def is_retired(self) -> bool:
+        """Whether this instance is permanently unavailable for publication."""
+        return self._retired
+
     @classmethod
     async def connect(
         cls,
