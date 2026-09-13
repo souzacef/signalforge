@@ -5,8 +5,8 @@ from pydantic import Field, PostgresDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
-    """Runtime settings loaded from the environment or a local dotenv file."""
+class DatabaseSettings(BaseSettings):
+    """Shared database configuration without API-only requirements."""
 
     model_config = SettingsConfigDict(
         env_prefix="SIGNALFORGE_",
@@ -15,9 +15,14 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    database_url: PostgresDsn
+
+
+class Settings(DatabaseSettings):
+    """API runtime settings loaded from the environment or a local dotenv file."""
+
     app_name: str = "SignalForge"
     app_environment: str = "development"
-    database_url: PostgresDsn
     jwt_secret: Annotated[SecretStr, Field(min_length=32)]
     access_token_expire_minutes: Annotated[int, Field(gt=0)] = 30
 

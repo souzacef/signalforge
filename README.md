@@ -185,12 +185,27 @@ preserve the durable event ID. An invalid stored event is retained with a visibl
 safe error code and a 24-hour retry delay for operator intervention. An ambiguous
 publication stops the batch and conditionally releases its unstarted claims.
 
-There is no long-running dispatcher process or end-to-end asynchronous processing
-yet. Once runtime orchestration lands, delivery will be at-least-once: ambiguous
-outcomes and publish/settlement crash windows can cause duplicates. Claims fence
-database settlement, not external delivery, and do not provide exactly-once
-delivery. Publication remains outside the API request path, and API readiness
-remains PostgreSQL-only.
+The standalone dispatcher can be run independently of FastAPI after setting
+`SIGNALFORGE_RABBITMQ_URL`:
+
+```sh
+uv run python -m signalforge.outbox.dispatcher
+```
+
+It performs bounded polling, reconnects to RabbitMQ with bounded exponential
+backoff and jitter, and handles `SIGTERM`/`SIGINT` through graceful shutdown. An
+active batch may drain for the configured timeout; forced cancellation then relies
+on claim-lease expiration for recovery. A publication interrupted this way may
+have an ambiguous broker outcome, unprocessed events may remain leased until
+expiration, and a later attempt can create a duplicate if publication succeeded
+before cancellation.
+
+Delivery is at-least-once: ambiguous outcomes and publish/settlement crash windows
+can cause duplicates. Claims fence database settlement, not external delivery,
+and do not provide exactly-once delivery. The dispatcher is not wired into root
+Compose yet, and no event consumer exists, so end-to-end event-driven processing
+is not complete. Publication remains outside the API request path, and API
+readiness remains PostgreSQL-only.
 
 ## Local authentication
 
