@@ -1,6 +1,5 @@
 from datetime import datetime
 from typing import Annotated, Self
-from unicodedata import category
 from uuid import UUID
 
 from pydantic import (
@@ -9,7 +8,6 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
-    field_validator,
     model_validator,
 )
 
@@ -17,16 +15,8 @@ from signalforge.remediation.models import (
     RemediationActionKind,
     RemediationProposalStatus,
 )
+from signalforge.remediation.targets import ServiceTarget
 
-ServiceTarget = Annotated[
-    str,
-    StringConstraints(
-        strip_whitespace=True,
-        min_length=1,
-        max_length=100,
-        pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?$",
-    ),
-]
 ProposalReason = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
@@ -50,15 +40,6 @@ class RemediationProposalCreate(BaseModel):
     action_kind: RemediationActionKind
     target: ServiceTarget
     reason: ProposalReason
-
-    @field_validator("target", mode="before")
-    @classmethod
-    def reject_target_control_characters(cls, value: object) -> object:
-        if isinstance(value, str) and any(
-            category(character) == "Cc" for character in value
-        ):
-            raise ValueError("target must not contain control characters")
-        return value
 
 
 class RemediationProposalReject(BaseModel):

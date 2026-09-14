@@ -213,6 +213,20 @@ Role policy is explicit:
 Approval only persists the human decision. It does not execute a command, restart
 a service, publish an execution event, or invoke AI.
 
+Approved proposals can be converted to a small command and passed directly by
+trusted application code to the internal remediation executor. No API endpoint
+invokes that executor yet. For `restart_service`, the executor resolves the
+logical target through an operator-configured allowlist of fixed HTTP(S)
+management endpoints; proposal targets are never interpreted as URLs or
+commands. The HTTP adapter makes one request with a bounded timeout and does not
+follow redirects. Automatic, durable execution is planned for the next phase;
+this contract does not provide exactly-once execution. The allowlist defaults to
+empty and therefore fails closed. Operators can provide it as JSON, for example:
+
+```env
+SIGNALFORGE_REMEDIATION_RESTART_ENDPOINTS={"checkout-api":"http://checkout-control:8080/internal/restart"}
+```
+
 Successful new Incident creation atomically commits the Incident and one durable
 `incident.created` v1 outbox intent in PostgreSQL. The intent stores an immutable
 creation snapshot; publication is not in the API request path. Historical
