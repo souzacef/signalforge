@@ -1,9 +1,10 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from signalforge.incidents.models import Incident, IncidentStatus
 from signalforge.remediation.errors import (
@@ -20,6 +21,7 @@ from signalforge.remediation.models import (
 )
 from signalforge.remediation.schemas import (
     RemediationProposalCreate,
+    RemediationProposalListQuery,
     RemediationProposalReject,
 )
 
@@ -76,6 +78,61 @@ async def get_remediation_proposal(
     if proposal is None:
         raise RemediationProposalNotFoundError
     return proposal
+
+
+async def get_remediation_proposal_proposer_id(
+    session: AsyncSession,
+    proposal_id: UUID,
+) -> UUID:
+    proposer_id = await session.scalar(
+        select(RemediationProposal.proposed_by_user_id).where(
+            RemediationProposal.id == proposal_id
+        )
+    )
+    if proposer_id is None:
+        raise RemediationProposalNotFoundError
+    return proposer_id
+
+
+def _proposal_filters(
+    query: RemediationProposalListQuery,
+) -> tuple[ColumnElement[bool], ...]:
+    filters: list[ColumnElement[bool]] = []
+    if query.incident_id is not None:
+        filters.append(RemediationProposal.incident_id == query.incident_id)
+    if query.status is not None:
+        filters.append(RemediationProposal.status == query.status)
+    if query.action_kind is not None:
+        filters.append(RemediationProposal.action_kind == query.action_kind)
+    if query.target is not None:
+        filters.append(RemediationProposal.target == query.target)
+    if query.proposed_by_user_id is not None:
+        filters.append(
+            RemediationProposal.proposed_by_user_id == query.proposed_by_user_id
+        )
+    if query.created_from is not None:
+        filters.append(RemediationProposal.created_at >= query.created_from)
+    if query.created_to is not None:
+        filters.append(RemediationProposal.created_at <= query.created_to)
+    return tuple(filters)
+
+
+async def list_remediation_proposals(
+    session: AsyncSession,
+    query: RemediationProposalListQuery,
+) -> tuple[list[RemediationProposal], int]:
+    filters = _proposal_filters(query)
+    total = await session.scalar(
+        select(func.count()).select_from(RemediationProposal).where(*filters)
+    )
+    proposals = await session.scalars(
+        select(RemediationProposal)
+        .where(*filters)
+        .order_by(RemediationProposal.created_at.desc(), RemediationProposal.id.desc())
+        .limit(query.limit)
+        .offset(query.offset)
+    )
+    return list(proposals), total or 0
 
 
 async def _get_remediation_proposal_for_update(

@@ -23,6 +23,7 @@ from signalforge.observability.tracing import (
     TracingRuntime,
     create_tracing_runtime,
 )
+from signalforge.remediation.router import router as remediation_router
 from signalforge.triage.router import router as triage_router
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,7 @@ def create_app(
     application.include_router(incidents_router)
     application.include_router(triage_router)
     application.include_router(enrichment_router)
+    application.include_router(remediation_router)
     if tracing_runtime.provider is not None:
         FastAPIInstrumentor.instrument_app(
             application,

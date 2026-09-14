@@ -138,6 +138,17 @@ The API exposes:
   incident; requires an `operator` or `admin` bearer token.
 - `POST /api/v1/incidents/{incident_id}/resolve` — resolves an acknowledged
   incident; requires an `operator` or `admin` bearer token.
+- `POST /api/v1/remediation-proposals` — creates a pending remediation
+  proposal; requires an `operator` or `admin` bearer token.
+- `GET /api/v1/remediation-proposals` — lists and filters remediation proposals;
+  available to all authenticated roles.
+- `GET /api/v1/remediation-proposals/{proposal_id}` — retrieves a remediation
+  proposal; available to all authenticated roles.
+- `POST /api/v1/remediation-proposals/{proposal_id}/approve` — approves a
+  pending proposal; requires an `admin` who is not the proposer.
+- `POST /api/v1/remediation-proposals/{proposal_id}/reject` — rejects or
+  withdraws a pending proposal; an `operator` may withdraw their own proposal,
+  while an `admin` may reject any proposal.
 - `GET /api/v1/incidents/{incident_id}/enrichments` — lists persisted advisory
   enrichment snapshots for one Incident; available to all authenticated roles.
 - `GET /api/v1/enrichments` — lists persisted advisory enrichment snapshots
@@ -175,6 +186,32 @@ Filters combine with `AND`; source matching is exact after trimming surrounding
 query whitespace. Results are ordered by `occurred_at` descending, then `id`
 descending. The response `total` is the number of matching incidents before
 pagination. Full-text search is not implemented.
+
+## Remediation proposal API
+
+A remediation proposal contains an Incident ID, the only supported action kind
+(`restart_service`), a logical service target, and a reason. The authenticated
+user is always recorded as the proposer; attribution and state fields cannot be
+supplied by the client. Rejection accepts only a non-empty
+`rejection_reason`; approval has no request body.
+
+`GET /api/v1/remediation-proposals` supports exact `incident_id`, `status`,
+`action_kind`, `target`, and `proposed_by_user_id` filters, plus inclusive
+`created_from` and `created_to` bounds. Target text is trimmed. Results use
+`limit`/`offset` pagination (default 20, maximum 100), report the total before
+pagination, and are ordered by `created_at` descending and then `id`
+descending.
+
+Role policy is explicit:
+
+- `viewer`: read proposals only.
+- `operator`: create and read proposals, and withdraw only their own pending
+  proposals.
+- `admin`: create and read proposals, approve another user's pending proposal,
+  and reject any pending proposal, including their own.
+
+Approval only persists the human decision. It does not execute a command, restart
+a service, publish an execution event, or invoke AI.
 
 Successful new Incident creation atomically commits the Incident and one durable
 `incident.created` v1 outbox intent in PostgreSQL. The intent stores an immutable
