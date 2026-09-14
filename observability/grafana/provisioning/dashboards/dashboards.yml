@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: SignalForge
+    orgId: 1
+    folder: SignalForge
+    folderUid: signalforge
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
