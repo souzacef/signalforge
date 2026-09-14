@@ -11,8 +11,9 @@ development straightforward while domain boundaries are still emerging, without
 preventing modules from being separated later when real operational needs justify
 it.
 
-RAG, observability, Angular, Kubernetes, Helm, Terraform, and AWS are planned
-directions. They are not implemented in this phase.
+RAG, metrics, distributed tracing, observability dashboards, Angular, Kubernetes,
+Helm, Terraform, and AWS are planned directions. They are not implemented in
+this phase.
 
 ## Prerequisites
 
@@ -355,6 +356,26 @@ AI-driven priority or remediation.
 
 Publication remains outside the API request path, and API readiness remains
 PostgreSQL-only.
+
+## Operational logging
+
+The API, dispatcher, Incident consumer, and enrichment worker emit one structured
+JSON object per log line to standard output or standard error for external
+container collection. Each process sets an explicit service identity, and records
+use stable event names plus a small allowlisted field set rather than dumping
+arbitrary objects.
+
+The API accepts a canonical UUID in `X-Request-ID`, generates a UUID when the
+header is absent or invalid, returns the effective ID in the response, and includes
+it in the request-completion log. RabbitMQ delivery logs correlate existing event
+metadata and, after validated decoding, Incident and trigger identifiers. Context
+is task-local and reset after every request or delivery.
+
+Authorization values, credentials, connection URLs, request and message bodies,
+Gemini prompts and responses, and raw known exception strings are intentionally
+omitted. Metrics, distributed tracing, and a local dashboard or log aggregation
+stack remain future Phase 4 work; this logging slice does not make telemetry an API
+readiness dependency.
 
 ## Local authentication
 

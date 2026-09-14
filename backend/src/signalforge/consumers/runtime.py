@@ -33,11 +33,17 @@ from sqlalchemy.ext.asyncio import (
 from yarl import URL
 
 from signalforge.consumers.incident_created import (
+    CONSUMER_NAME,
     InvalidEventError,
     ProcessingResult,
     handle_message,
 )
 from signalforge.core.config import DatabaseSettings
+from signalforge.observability.logging import (
+    bind_log_context,
+    configure_logging,
+    delivery_log_context,
+)
 from signalforge.outbox.dispatching import retry_delay
 from signalforge.outbox.rabbitmq import QUEUE_NAME, declare_topology
 
@@ -239,7 +245,7 @@ async def _next_or_stop(
         raise
 
 
-async def _run_handler_or_drain(
+async def _run_handler_with_context(
     message: AbstractIncomingMessage,
     session_factory: async_sessionmaker[AsyncSession],
     settings: ConsumerSettings,
@@ -261,20 +267,39 @@ async def _run_handler_or_drain(
             await _cancel_and_await(stop_task)
             return await handler_task, stop_event.is_set()
 
-        logger.info("consumer draining active delivery")
+        logger.info(
+            "consumer draining active delivery",
+            extra={"event": "consumer_delivery_draining"},
+        )
         try:
             result = await asyncio.wait_for(
                 asyncio.shield(handler_task),
                 timeout=settings.consumer_shutdown_drain_timeout_seconds,
             )
         except TimeoutError:
-            logger.warning("consumer forcing active delivery cancellation")
+            logger.warning(
+                "consumer forcing active delivery cancellation",
+                extra={"event": "consumer_delivery_cancelled"},
+            )
             await _cancel_and_await(handler_task)
             return None, True
         return result, True
     except asyncio.CancelledError:
         await _cancel_and_collect(handler_task, stop_task)
         raise
+
+
+async def _run_handler_or_drain(
+    message: AbstractIncomingMessage,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: ConsumerSettings,
+    stop_event: asyncio.Event,
+) -> tuple[ProcessingResult | None, bool]:
+    context = delivery_log_context(message, consumer_name=CONSUMER_NAME)
+    with bind_log_context(**context):
+        return await _run_handler_with_context(
+            message, session_factory, settings, stop_event
+        )
 
 
 async def _consume_connected(
@@ -294,6 +319,7 @@ async def _consume_connected(
             if message is None:
                 return _ConsumeOutcome.STOPPED
 
+            message_context = delivery_log_context(message, consumer_name=CONSUMER_NAME)
             try:
                 result, stopping = await _run_handler_or_drain(
                     message,
@@ -305,7 +331,11 @@ async def _consume_connected(
                 database_failures = 0
                 logger.warning(
                     "consumer rejected invalid event",
-                    extra={"reason": error.reason},
+                    extra={
+                        **message_context,
+                        "event": "message_rejected",
+                        "reason": error.reason,
+                    },
                 )
                 continue
             except SQLAlchemyError:
@@ -318,6 +348,8 @@ async def _consume_connected(
                 logger.warning(
                     "consumer database operation unavailable; retry scheduled",
                     extra={
+                        **message_context,
+                        "event": "message_requeued",
                         "attempt": database_failures,
                         "delay_seconds": delay,
                     },
@@ -331,16 +363,15 @@ async def _consume_connected(
             if result is None or stopping:
                 return _ConsumeOutcome.STOPPED
             database_failures = 0
-            if result is ProcessingResult.PROCESSED:
-                logger.info("consumer message processed")
-            else:
-                logger.info("consumer duplicate message ignored")
 
     return _ConsumeOutcome.BROKER_UNAVAILABLE
 
 
 def request_shutdown(stop_event: asyncio.Event, signal_name: str) -> None:
-    logger.info("consumer shutdown requested", extra={"signal": signal_name})
+    logger.info(
+        "consumer shutdown requested",
+        extra={"event": "consumer_stopping", "signal": signal_name},
+    )
     stop_event.set()
 
 
@@ -359,7 +390,10 @@ def install_signal_handlers(
         except (NotImplementedError, RuntimeError):
             logger.warning(
                 "consumer signal handler unavailable",
-                extra={"signal": process_signal.name},
+                extra={
+                    "event": "consumer_signal_handler_unavailable",
+                    "signal": process_signal.name,
+                },
             )
         else:
             installed.append(process_signal)
@@ -385,7 +419,7 @@ async def run_consumer(
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     broker: ConsumerBroker | None = None
     reconnect_failures = 0
-    logger.info("consumer starting")
+    logger.info("consumer starting", extra={"event": "consumer_started"})
     try:
         while not stop.is_set():
             if broker is None:
@@ -401,6 +435,7 @@ async def run_consumer(
                     logger.warning(
                         "RabbitMQ connection unavailable; reconnect scheduled",
                         extra={
+                            "event": "broker_connect_failed",
                             "attempt": reconnect_failures,
                             "delay_seconds": delay,
                         },
@@ -411,7 +446,9 @@ async def run_consumer(
                 if broker is None:
                     break
                 reconnect_failures = 0
-                logger.info("consumer broker connected")
+                logger.info(
+                    "consumer broker connected", extra={"event": "broker_connected"}
+                )
 
             try:
                 outcome = await _consume_connected(
@@ -427,14 +464,21 @@ async def run_consumer(
             if outcome is _ConsumeOutcome.STOPPED:
                 break
 
-            logger.warning("consumer broker connection lost")
+            logger.warning(
+                "consumer broker connection lost",
+                extra={"event": "broker_connection_lost"},
+            )
             await broker.close()
             broker = None
             reconnect_failures = 1
             delay = _backoff_seconds(reconnect_failures, settings, jitter_source)
             logger.warning(
                 "RabbitMQ reconnect scheduled",
-                extra={"attempt": reconnect_failures, "delay_seconds": delay},
+                extra={
+                    "event": "broker_connect_failed",
+                    "attempt": reconnect_failures,
+                    "delay_seconds": delay,
+                },
             )
             if await _wait_for_stop(stop, delay):
                 break
@@ -446,8 +490,13 @@ async def run_consumer(
             try:
                 await engine.dispose()
             except (SQLAlchemyError, OSError):
-                logger.error("consumer database resource cleanup failed")
-            logger.info("consumer stopped")
+                logger.error(
+                    "consumer database resource cleanup failed",
+                    extra={"event": "consumer_cleanup_failed"},
+                )
+            logger.info(
+                "consumer stopped", extra={"event": "consumer_shutdown_complete"}
+            )
 
 
 async def async_main() -> None:
@@ -462,7 +511,7 @@ async def async_main() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging("signalforge-incident-consumer")
     asyncio.run(async_main())
 
 

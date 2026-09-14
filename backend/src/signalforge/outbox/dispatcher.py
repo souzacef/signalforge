@@ -20,8 +20,13 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from signalforge.core.config import DatabaseSettings
+from signalforge.observability.logging import configure_logging
 from signalforge.outbox.dispatching import retry_delay
-from signalforge.outbox.orchestrator import DispatchBatchResult, dispatch_batch
+from signalforge.outbox.orchestrator import (
+    DispatchBatchResult,
+    DispatchOutcome,
+    dispatch_batch,
+)
 from signalforge.outbox.rabbitmq import PublishFailedError, RabbitMQPublisher
 
 logger = logging.getLogger(__name__)
@@ -192,14 +197,20 @@ async def _run_batch_or_drain(
             await _cancel_and_await(stop_task)
             return await batch_task, stop_event.is_set()
 
-        logger.info("dispatcher draining active batch")
+        logger.info(
+            "dispatcher draining active batch",
+            extra={"event": "dispatcher_stopping"},
+        )
         try:
             result = await asyncio.wait_for(
                 asyncio.shield(batch_task),
                 timeout=settings.dispatcher_shutdown_drain_timeout_seconds,
             )
         except TimeoutError:
-            logger.warning("dispatcher forcing active batch cancellation")
+            logger.warning(
+                "dispatcher forcing active batch cancellation",
+                extra={"event": "dispatcher_batch_cancelled"},
+            )
             await _cancel_and_await(batch_task)
             return None, True
         return result, True
@@ -210,7 +221,10 @@ async def _run_batch_or_drain(
 
 def request_shutdown(stop_event: asyncio.Event, signal_name: str) -> None:
     """Signal-safe callback: record the request and wake interruptible waits."""
-    logger.info("dispatcher shutdown requested", extra={"signal": signal_name})
+    logger.info(
+        "dispatcher shutdown requested",
+        extra={"event": "dispatcher_stopping", "signal": signal_name},
+    )
     stop_event.set()
 
 
@@ -230,7 +244,10 @@ def install_signal_handlers(
         except (NotImplementedError, RuntimeError):
             logger.warning(
                 "dispatcher signal handler unavailable",
-                extra={"signal": process_signal.name},
+                extra={
+                    "event": "dispatcher_signal_handler_unavailable",
+                    "signal": process_signal.name,
+                },
             )
         else:
             installed.append(process_signal)
@@ -248,6 +265,7 @@ def _log_batch(result: DispatchBatchResult) -> None:
     logger.info(
         "dispatcher batch completed",
         extra={
+            "event": "outbox_batch_claimed",
             "claimed": result.claimed,
             "published": result.published,
             "retry_scheduled": result.retry_scheduled,
@@ -257,6 +275,40 @@ def _log_batch(result: DispatchBatchResult) -> None:
             "publisher_retired": result.publisher_retired,
         },
     )
+    for event_result in result.events:
+        event_name = {
+            DispatchOutcome.PUBLISHED: "outbox_event_published",
+            DispatchOutcome.RETRY_SCHEDULED: (
+                "outbox_event_invalid"
+                if event_result.error_code == "invalid_event"
+                else "outbox_event_retry_scheduled"
+            ),
+            DispatchOutcome.OWNERSHIP_LOST: "outbox_event_ownership_lost",
+            DispatchOutcome.RELEASED: "outbox_event_released",
+            DispatchOutcome.DATABASE_FAILED: (
+                "outbox_publication_ambiguous"
+                if event_result.publication_confirmed
+                else "outbox_event_database_failed"
+            ),
+        }[event_result.outcome]
+        log = (
+            logger.info
+            if event_result.outcome
+            in {
+                DispatchOutcome.PUBLISHED,
+                DispatchOutcome.RELEASED,
+            }
+            else logger.warning
+        )
+        log(
+            "outbox event dispatch completed",
+            extra={
+                "event": event_name,
+                "event_id": event_result.event_id,
+                "result": event_result.outcome,
+                "error_code": event_result.error_code,
+            },
+        )
 
 
 async def run_dispatcher(
@@ -272,7 +324,7 @@ async def run_dispatcher(
     publisher: RabbitMQPublisher | None = None
     reconnect_failures = 0
     database_failures = 0
-    logger.info("dispatcher starting")
+    logger.info("dispatcher starting", extra={"event": "dispatcher_started"})
     try:
         while not stop.is_set():
             if publisher is None:
@@ -286,6 +338,7 @@ async def run_dispatcher(
                     logger.warning(
                         "RabbitMQ connection unavailable; reconnect scheduled",
                         extra={
+                            "event": "broker_connect_failed",
                             "attempt": reconnect_failures,
                             "delay_seconds": delay,
                         },
@@ -296,7 +349,10 @@ async def run_dispatcher(
                 if publisher is None:
                     break
                 reconnect_failures = 0
-                logger.info("dispatcher publisher connected")
+                logger.info(
+                    "dispatcher publisher connected",
+                    extra={"event": "broker_connected"},
+                )
 
             if stop.is_set():
                 break
@@ -317,6 +373,7 @@ async def run_dispatcher(
                 logger.warning(
                     "dispatcher database operation unavailable; retry scheduled",
                     extra={
+                        "event": "dispatcher_database_retry_scheduled",
                         "attempt": database_failures,
                         "delay_seconds": delay,
                     },
@@ -333,7 +390,10 @@ async def run_dispatcher(
 
             publisher_retired = result.publisher_retired or publisher.is_retired
             if publisher_retired:
-                logger.warning("dispatcher publisher retired")
+                logger.warning(
+                    "dispatcher publisher retired",
+                    extra={"event": "dispatcher_publisher_retired"},
+                )
                 await publisher.close()
                 publisher = None
                 reconnect_failures = 0
@@ -344,6 +404,7 @@ async def run_dispatcher(
                 logger.warning(
                     "dispatcher database settlement unavailable; retry scheduled",
                     extra={
+                        "event": "dispatcher_database_retry_scheduled",
                         "attempt": database_failures,
                         "delay_seconds": delay,
                     },
@@ -358,7 +419,11 @@ async def run_dispatcher(
                 delay = _backoff_seconds(reconnect_failures, settings, jitter_source)
                 logger.warning(
                     "RabbitMQ reconnect scheduled",
-                    extra={"attempt": reconnect_failures, "delay_seconds": delay},
+                    extra={
+                        "event": "broker_connect_failed",
+                        "attempt": reconnect_failures,
+                        "delay_seconds": delay,
+                    },
                 )
                 if await _wait_for_stop(stop, delay):
                     break
@@ -379,8 +444,14 @@ async def run_dispatcher(
             try:
                 await engine.dispose()
             except SQLAlchemyError:
-                logger.error("dispatcher database resource cleanup failed")
-            logger.info("dispatcher stopped")
+                logger.error(
+                    "dispatcher database resource cleanup failed",
+                    extra={"event": "dispatcher_cleanup_failed"},
+                )
+            logger.info(
+                "dispatcher stopped",
+                extra={"event": "dispatcher_shutdown_complete"},
+            )
 
 
 async def async_main() -> None:
@@ -395,7 +466,7 @@ async def async_main() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging("signalforge-dispatcher")
     asyncio.run(async_main())
 
 
