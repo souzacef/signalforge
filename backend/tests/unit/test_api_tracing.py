@@ -17,6 +17,7 @@ from signalforge.main import create_app
 from signalforge.observability.tracing import (
     API_SERVICE_NAME,
     DISPATCHER_SERVICE_NAME,
+    ENRICHMENT_WORKER_SERVICE_NAME,
     INCIDENT_CONSUMER_SERVICE_NAME,
     TracingRuntime,
     create_tracing_runtime,
@@ -326,6 +327,7 @@ async def test_batch_processor_worker_stops_on_shutdown() -> None:
         API_SERVICE_NAME,
         DISPATCHER_SERVICE_NAME,
         INCIDENT_CONSUMER_SERVICE_NAME,
+        ENRICHMENT_WORKER_SERVICE_NAME,
     ],
 )
 async def test_runtime_uses_explicit_code_owned_service_identity(

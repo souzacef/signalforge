@@ -22,16 +22,19 @@ from signalforge.core.config import TracingSettings
 API_SERVICE_NAME: Final = "signalforge-api"
 DISPATCHER_SERVICE_NAME: Final = "signalforge-dispatcher"
 INCIDENT_CONSUMER_SERVICE_NAME: Final = "signalforge-incident-consumer"
+ENRICHMENT_WORKER_SERVICE_NAME: Final = "signalforge-enrichment-worker"
 type ServiceName = Literal[
     "signalforge-api",
     "signalforge-dispatcher",
     "signalforge-incident-consumer",
+    "signalforge-enrichment-worker",
 ]
 _SERVICE_NAMES: Final = frozenset(
     {
         API_SERVICE_NAME,
         DISPATCHER_SERVICE_NAME,
         INCIDENT_CONSUMER_SERVICE_NAME,
+        ENRICHMENT_WORKER_SERVICE_NAME,
     }
 )
 SpanProcessorFactory = Callable[[SpanExporter], SpanProcessor]

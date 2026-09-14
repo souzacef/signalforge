@@ -386,13 +386,41 @@ async def test_entrypoint_constructs_provider_once_outside_worker_loop(
     worker_calls: list[tuple[object, object]] = []
     worker_metrics: list[EnrichmentMetrics] = []
     created_registry: list[object] = []
+    order: list[str] = []
+    gemini_tracer = object()
+    consumer_tracer = object()
 
+    class FakeTracingRuntime:
+        shutdown_calls = 0
+
+        def get_tracer(self, name: str) -> object:
+            return {
+                "signalforge.enrichment.gemini": gemini_tracer,
+                "signalforge.enrichment.consumer": consumer_tracer,
+            }[name]
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+            order.append("tracing_shutdown")
+
+    class FakeMetricsServer:
+        def stop(self) -> None:
+            order.append("metrics_stop")
+
+    tracing = FakeTracingRuntime()
     monkeypatch.setattr(runtime, "EnrichmentWorkerSettings", lambda: runtime_settings)
     monkeypatch.setattr(runtime, "EnrichmentSettings", lambda: enrichment_settings)
+    monkeypatch.setattr(runtime, "_create_worker_tracing_runtime", lambda: tracing)
+    monkeypatch.setattr(
+        runtime.MetricsHttpServer, "start", lambda *args, **kwargs: FakeMetricsServer()
+    )
 
-    def create_provider(value: object, *, metrics: object) -> FakeProvider:
+    def create_provider(
+        value: object, *, metrics: object, tracer: object
+    ) -> FakeProvider:
         constructed.append(value)
         created_registry.append(metrics.registry)
+        assert tracer is gemini_tracer
         return provider
 
     async def run(
@@ -402,6 +430,8 @@ async def test_entrypoint_constructs_provider_once_outside_worker_loop(
     ) -> None:
         worker_calls.append((worker_settings, actual_provider))
         worker_metrics.append(cast(EnrichmentMetrics, kwargs["metrics"]))
+        assert kwargs["tracer"] is consumer_tracer
+        order.append("worker_done")
 
     monkeypatch.setattr(runtime, "GeminiEnrichmentProvider", create_provider)
     monkeypatch.setattr(runtime, "run_worker", run)
@@ -414,6 +444,8 @@ async def test_entrypoint_constructs_provider_once_outside_worker_loop(
     assert worker_calls == [(runtime_settings, provider)]
     assert len(worker_metrics) == 1
     assert created_registry == [worker_metrics[0].registry]
+    assert tracing.shutdown_calls == 1
+    assert order == ["worker_done", "metrics_stop", "tracing_shutdown"]
 
 
 async def test_terminal_failures_continue_and_reset_processing_backoff(
@@ -902,3 +934,53 @@ async def test_programming_error_propagates_after_resource_cleanup(
 
     assert broker.close_calls == 1
     assert engine.dispose_calls == 1
+
+
+async def test_tracing_cleanup_failure_does_not_hide_worker_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "PRIVATE_TRACING_SHUTDOWN_DETAIL"
+
+    class FailingTracingRuntime:
+        shutdown_calls = 0
+
+        def get_tracer(self, name: str) -> None:
+            return None
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+            raise RuntimeError(secret)
+
+    tracing = FailingTracingRuntime()
+    monkeypatch.setattr(runtime, "EnrichmentWorkerSettings", lambda: settings())
+    monkeypatch.setattr(runtime, "EnrichmentSettings", lambda: object())
+    monkeypatch.setattr(runtime, "_create_worker_tracing_runtime", lambda: tracing)
+    monkeypatch.setattr(
+        runtime, "GeminiEnrichmentProvider", lambda *args, **kwargs: FakeProvider()
+    )
+    monkeypatch.setattr(runtime, "install_signal_handlers", lambda *args: ())
+    monkeypatch.setattr(runtime, "remove_signal_handlers", lambda *args: None)
+    monkeypatch.setattr(
+        runtime.MetricsHttpServer,
+        "start",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("metrics off")),
+    )
+
+    async def fail(*args: object, **kwargs: object) -> None:
+        raise ValueError("original worker failure")
+
+    monkeypatch.setattr(runtime, "run_worker", fail)
+
+    with (
+        caplog.at_level(logging.ERROR),
+        pytest.raises(ValueError, match="original worker failure"),
+    ):
+        await runtime.async_main()
+
+    assert tracing.shutdown_calls == 1
+    assert secret not in caplog.text
+    assert any(
+        getattr(record, "exception_type", None) == "RuntimeError"
+        for record in caplog.records
+    )

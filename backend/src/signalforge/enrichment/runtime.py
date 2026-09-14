@@ -20,6 +20,7 @@ from aio_pika.abc import (
     AbstractQueueIterator,
 )
 from aio_pika.exceptions import AMQPError, ChannelInvalidStateError
+from opentelemetry.trace import Tracer
 from pamqp.exceptions import PAMQPException
 from pydantic import AmqpDsn, Field, model_validator
 from pydantic_settings import SettingsConfigDict
@@ -37,6 +38,7 @@ from signalforge.core.config import (
     EnrichmentSettings,
     MetricsHost,
     MetricsPort,
+    get_tracing_settings,
 )
 from signalforge.db.errors import DatabaseTransportError
 from signalforge.enrichment.consumer import (
@@ -61,6 +63,11 @@ from signalforge.observability.metrics import (
     EnrichmentMetrics,
     MessageMetricResult,
     ProviderMetrics,
+)
+from signalforge.observability.tracing import (
+    ENRICHMENT_WORKER_SERVICE_NAME,
+    TracingRuntime,
+    create_tracing_runtime,
 )
 from signalforge.outbox.dispatching import retry_delay
 from signalforge.outbox.rabbitmq import ENRICHMENT_QUEUE_NAME, declare_topology
@@ -199,6 +206,22 @@ async def _connect_broker(settings: EnrichmentWorkerSettings) -> EnrichmentBroke
     return await EnrichmentBroker.connect(settings)
 
 
+def _create_worker_tracing_runtime() -> TracingRuntime:
+    try:
+        return create_tracing_runtime(
+            get_tracing_settings(), service_name=ENRICHMENT_WORKER_SERVICE_NAME
+        )
+    except Exception as error:
+        logger.error(
+            "tracing startup failed",
+            extra={
+                "event": "tracing_startup_failed",
+                "exception_type": type(error).__name__,
+            },
+        )
+        return TracingRuntime()
+
+
 def _backoff_seconds(
     attempt_count: int,
     *,
@@ -308,18 +331,24 @@ async def _run_handler_with_context(
     session_factory: async_sessionmaker[AsyncSession],
     settings: EnrichmentWorkerSettings,
     stop_event: asyncio.Event,
+    tracer: Tracer | None = None,
 ) -> tuple[EnrichmentProcessingResult | None, bool]:
     if stop_event.is_set():
         await _requeue_unstarted(message)
         return None, True
 
-    handler_task = asyncio.create_task(
-        handle_message(
+    if tracer is None:
+        handler = handle_message(
+            cast(IncomingMessage, message), provider, session_factory
+        )
+    else:
+        handler = handle_message(
             cast(IncomingMessage, message),
             provider,
             session_factory,
+            tracer=tracer,
         )
-    )
+    handler_task = asyncio.create_task(handler)
     stop_task = asyncio.create_task(stop_event.wait())
     try:
         done, _ = await asyncio.wait(
@@ -357,11 +386,16 @@ async def _run_handler_or_drain(
     session_factory: async_sessionmaker[AsyncSession],
     settings: EnrichmentWorkerSettings,
     stop_event: asyncio.Event,
+    tracer: Tracer | None = None,
 ) -> tuple[EnrichmentProcessingResult | None, bool]:
     context = delivery_log_context(message, consumer_name=CONSUMER_NAME)
     with bind_log_context(**context):
+        if tracer is None:
+            return await _run_handler_with_context(
+                message, provider, session_factory, settings, stop_event
+            )
         return await _run_handler_with_context(
-            message, provider, session_factory, settings, stop_event
+            message, provider, session_factory, settings, stop_event, tracer
         )
 
 
@@ -373,6 +407,7 @@ async def _consume_connected(
     stop_event: asyncio.Event,
     jitter_source: Callable[[], float],
     metrics: EnrichmentMetrics | None = None,
+    tracer: Tracer | None = None,
 ) -> _ConsumeOutcome:
     pipeline_metrics = metrics or EnrichmentMetrics()
     processing_failures = 0
@@ -391,13 +426,23 @@ async def _consume_connected(
                     message, consumer_name=CONSUMER_NAME
                 )
                 try:
-                    result, stopping = await _run_handler_or_drain(
-                        message,
-                        provider,
-                        session_factory,
-                        settings,
-                        stop_event,
-                    )
+                    if tracer is None:
+                        result, stopping = await _run_handler_or_drain(
+                            message,
+                            provider,
+                            session_factory,
+                            settings,
+                            stop_event,
+                        )
+                    else:
+                        result, stopping = await _run_handler_or_drain(
+                            message,
+                            provider,
+                            session_factory,
+                            settings,
+                            stop_event,
+                            tracer,
+                        )
                 except InvalidEnrichmentEventError as error:
                     processing_failures = 0
                     pipeline_metrics.record(MessageMetricResult.REJECTED)
@@ -557,6 +602,7 @@ async def run_worker(
     stop_event: asyncio.Event | None = None,
     jitter_source: Callable[[], float] = random,
     metrics: EnrichmentMetrics | None = None,
+    tracer: Tracer | None = None,
 ) -> None:
     """Consume sequentially until stopped, owning all DB/broker resources."""
     stop = stop_event or asyncio.Event()
@@ -601,15 +647,27 @@ async def run_worker(
                 )
 
             try:
-                outcome = await _consume_connected(
-                    broker,
-                    provider,
-                    session_factory,
-                    settings,
-                    stop,
-                    jitter_source,
-                    pipeline_metrics,
-                )
+                if tracer is None:
+                    outcome = await _consume_connected(
+                        broker,
+                        provider,
+                        session_factory,
+                        settings,
+                        stop,
+                        jitter_source,
+                        pipeline_metrics,
+                    )
+                else:
+                    outcome = await _consume_connected(
+                        broker,
+                        provider,
+                        session_factory,
+                        settings,
+                        stop,
+                        jitter_source,
+                        pipeline_metrics,
+                        tracer,
+                    )
             except _BROKER_ERRORS:
                 outcome = _ConsumeOutcome.BROKER_UNAVAILABLE
 
@@ -662,52 +720,74 @@ async def async_main() -> None:
     enrichment_settings = EnrichmentSettings()  # type: ignore[call-arg]
     pipeline_metrics = EnrichmentMetrics()
     provider_metrics = ProviderMetrics(pipeline_metrics.registry)
-    provider = GeminiEnrichmentProvider(enrichment_settings, metrics=provider_metrics)
-    stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    installed = install_signal_handlers(loop, stop_event)
-    metrics_server: MetricsHttpServer | None = None
+    tracing_runtime = _create_worker_tracing_runtime()
     try:
-        try:
-            metrics_server = MetricsHttpServer.start(
-                pipeline_metrics.registry,
-                host=settings.metrics_host,
-                port=settings.metrics_port,
-            )
-        except Exception:
-            logger.warning(
-                "metrics server could not start",
-                extra={"event": "metrics_server_start_failed"},
-            )
-        else:
-            logger.info(
-                "metrics server started",
-                extra={
-                    "event": "metrics_server_started",
-                    "metrics_host": settings.metrics_host,
-                    "metrics_port": settings.metrics_port,
-                },
-            )
-        await run_worker(
-            settings, provider, stop_event=stop_event, metrics=pipeline_metrics
+        provider = GeminiEnrichmentProvider(
+            enrichment_settings,
+            metrics=provider_metrics,
+            tracer=tracing_runtime.get_tracer("signalforge.enrichment.gemini"),
         )
+        consumer_tracer = tracing_runtime.get_tracer("signalforge.enrichment.consumer")
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        installed = install_signal_handlers(loop, stop_event)
+        metrics_server: MetricsHttpServer | None = None
+        try:
+            try:
+                metrics_server = MetricsHttpServer.start(
+                    pipeline_metrics.registry,
+                    host=settings.metrics_host,
+                    port=settings.metrics_port,
+                )
+            except Exception:
+                logger.warning(
+                    "metrics server could not start",
+                    extra={"event": "metrics_server_start_failed"},
+                )
+            else:
+                logger.info(
+                    "metrics server started",
+                    extra={
+                        "event": "metrics_server_started",
+                        "metrics_host": settings.metrics_host,
+                        "metrics_port": settings.metrics_port,
+                    },
+                )
+            await run_worker(
+                settings,
+                provider,
+                stop_event=stop_event,
+                metrics=pipeline_metrics,
+                tracer=consumer_tracer,
+            )
+        finally:
+            try:
+                if metrics_server is not None:
+                    try:
+                        await asyncio.to_thread(metrics_server.stop)
+                    except Exception:
+                        logger.warning(
+                            "metrics server cleanup failed",
+                            extra={"event": "metrics_server_stop_failed"},
+                        )
+                    else:
+                        logger.info(
+                            "metrics server stopped",
+                            extra={"event": "metrics_server_stopped"},
+                        )
+            finally:
+                remove_signal_handlers(loop, installed)
     finally:
         try:
-            if metrics_server is not None:
-                try:
-                    await asyncio.to_thread(metrics_server.stop)
-                except Exception:
-                    logger.warning(
-                        "metrics server cleanup failed",
-                        extra={"event": "metrics_server_stop_failed"},
-                    )
-                else:
-                    logger.info(
-                        "metrics server stopped",
-                        extra={"event": "metrics_server_stopped"},
-                    )
-        finally:
-            remove_signal_handlers(loop, installed)
+            await asyncio.to_thread(tracing_runtime.shutdown)
+        except Exception as error:
+            logger.error(
+                "tracing shutdown failed",
+                extra={
+                    "event": "tracing_shutdown_failed",
+                    "exception_type": type(error).__name__,
+                },
+            )
 
 
 def main() -> None:
