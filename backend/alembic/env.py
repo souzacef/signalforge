@@ -13,6 +13,7 @@ from signalforge.db.base import Base
 from signalforge.enrichment import models as enrichment_models  # noqa: F401
 from signalforge.incidents import models as incident_models  # noqa: F401
 from signalforge.outbox import models as outbox_models  # noqa: F401
+from signalforge.remediation import models as remediation_models  # noqa: F401
 from signalforge.triage import models as triage_models  # noqa: F401
 from signalforge.users import models as user_models  # noqa: F401
 

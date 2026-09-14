@@ -1,0 +1,1 @@
+"""Controlled remediation proposal domain."""
