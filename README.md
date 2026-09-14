@@ -512,8 +512,13 @@ Set `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` to override the local
 Grafana login. The example `admin` / `signalforge-local` credentials are for
 localhost development only. Prometheus is provisioned as Grafana's default data
 source, and Tempo is provisioned for trace search and span-tree inspection in
-Explore. No dashboard, alert rules, trace-to-logs links, or exemplar links are
-provisioned in this phase.
+Explore. Open Grafana, then **Dashboards → SignalForge → SignalForge Overview**.
+Its overview, API, event-pipeline, and optional AI rows use Prometheus; its recent
+and error-trace tables use Tempo. Select a trace ID to inspect the distributed
+span tree in Explore. Traces require `SIGNALFORGE_TRACING_ENABLED=true`; the
+complete AI path also requires `--profile ai` and a real
+`SIGNALFORGE_GEMINI_API_KEY`. The AI panels can show no data while that profile
+is off. No alerts, trace-to-logs links, or exemplar links are provisioned.
 
 Telemetry follows these paths:
 
