@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from signalforge.consumers.models import ProcessedEvent
+from signalforge.db.errors import DatabaseTransportError
 from signalforge.incidents.events import IncidentCreated
 from signalforge.observability.logging import bind_log_context
 from signalforge.outbox.models import OutboxEvent
@@ -159,10 +160,14 @@ async def handle_message(
     ):
         try:
             result = await process_event(event, session_factory)
-        except (SQLAlchemyError, OSError):
-            # asyncpg may expose raw transport OSErrors before SQLAlchemy wraps them.
+        except SQLAlchemyError:
             await message.nack(requeue=True)
             raise
+        except OSError:
+            # asyncpg may expose raw transport failures before SQLAlchemy wraps them.
+            # Translate only after NACK succeeds so broker errors remain broker errors.
+            await message.nack(requeue=True)
+            raise DatabaseTransportError() from None
 
         await message.ack()
         logger.info(

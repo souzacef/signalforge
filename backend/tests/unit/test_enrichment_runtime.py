@@ -13,6 +13,7 @@ from aio_pika.exceptions import ChannelInvalidStateError
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
+from signalforge.db.errors import DatabaseTransportError
 from signalforge.enrichment import runtime
 from signalforge.enrichment.consumer import (
     EnrichmentProcessingResult,
@@ -31,6 +32,7 @@ from signalforge.enrichment.runtime import (
     EnrichmentWorkerSettings,
     run_worker,
 )
+from signalforge.observability.metrics import EnrichmentMetrics
 
 pytestmark = pytest.mark.anyio
 
@@ -382,12 +384,15 @@ async def test_entrypoint_constructs_provider_once_outside_worker_loop(
     provider = FakeProvider()
     constructed: list[object] = []
     worker_calls: list[tuple[object, object]] = []
+    worker_metrics: list[EnrichmentMetrics] = []
+    created_registry: list[object] = []
 
     monkeypatch.setattr(runtime, "EnrichmentWorkerSettings", lambda: runtime_settings)
     monkeypatch.setattr(runtime, "EnrichmentSettings", lambda: enrichment_settings)
 
-    def create_provider(value: object) -> FakeProvider:
+    def create_provider(value: object, *, metrics: object) -> FakeProvider:
         constructed.append(value)
+        created_registry.append(metrics.registry)
         return provider
 
     async def run(
@@ -396,6 +401,7 @@ async def test_entrypoint_constructs_provider_once_outside_worker_loop(
         **kwargs: object,
     ) -> None:
         worker_calls.append((worker_settings, actual_provider))
+        worker_metrics.append(cast(EnrichmentMetrics, kwargs["metrics"]))
 
     monkeypatch.setattr(runtime, "GeminiEnrichmentProvider", create_provider)
     monkeypatch.setattr(runtime, "run_worker", run)
@@ -406,6 +412,8 @@ async def test_entrypoint_constructs_provider_once_outside_worker_loop(
 
     assert constructed == [enrichment_settings]
     assert worker_calls == [(runtime_settings, provider)]
+    assert len(worker_metrics) == 1
+    assert created_registry == [worker_metrics[0].registry]
 
 
 async def test_terminal_failures_continue_and_reset_processing_backoff(
@@ -417,6 +425,7 @@ async def test_terminal_failures_continue_and_reset_processing_backoff(
         FakeBroker(FakeIterator(cast(list[object], messages))),
     )
     stop = asyncio.Event()
+    metrics = EnrichmentMetrics()
     calls = 0
     delays: list[float] = []
 
@@ -452,6 +461,7 @@ async def test_terminal_failures_continue_and_reset_processing_backoff(
         settings(),
         stop,
         lambda: 0,
+        metrics,
     )
 
     assert result is runtime._ConsumeOutcome.STOPPED
@@ -460,6 +470,21 @@ async def test_terminal_failures_continue_and_reset_processing_backoff(
     assert messages[1].reject_calls == [False]
     assert messages[3].reject_calls == [False]
     assert all(messages[index].nack_calls == [True] for index in (0, 2, 4))
+    for metric_result, count in (("requeued", 3), ("rejected", 2), ("processed", 1)):
+        assert (
+            metrics.registry.get_sample_value(
+                "signalforge_enrichment_messages_total", {"result": metric_result}
+            )
+            == count
+        )
+    assert (
+        sum(
+            sample.value
+            for sample in metrics.messages.collect()[0].samples
+            if sample.name.endswith("_total")
+        )
+        == 6
+    )
 
 
 async def test_transient_processing_backoff_is_interruptible_by_shutdown(
@@ -505,6 +530,7 @@ async def test_success_and_duplicate_reset_processing_backoff(
         FakeBroker(FakeIterator(cast(list[object], messages))),
     )
     stop = asyncio.Event()
+    metrics = EnrichmentMetrics()
     calls = 0
     delays: list[float] = []
 
@@ -538,11 +564,19 @@ async def test_success_and_duplicate_reset_processing_backoff(
         settings(),
         stop,
         lambda: 0,
+        metrics,
     )
 
     assert result is runtime._ConsumeOutcome.STOPPED
     assert calls == 6
     assert delays == [0.5, 0.5, 0.5]
+    for metric_result, count in (("requeued", 3), ("processed", 2), ("duplicate", 1)):
+        assert (
+            metrics.registry.get_sample_value(
+                "signalforge_enrichment_messages_total", {"result": metric_result}
+            )
+            == count
+        )
 
 
 async def test_database_failure_backs_off_without_recreating_engine(
@@ -566,11 +600,15 @@ async def test_database_failure_backs_off_without_recreating_engine(
         stop.set()
         return EnrichmentProcessingResult.PROCESSED
 
+    async def database_available(factory: object) -> bool:
+        return True
+
     async def wait(event: asyncio.Event, delay: float) -> bool:
         delays.append(delay)
         return False
 
     monkeypatch.setattr(runtime, "handle_message", handle)
+    monkeypatch.setattr(runtime, "_database_available", database_available)
     monkeypatch.setattr(runtime, "_wait_for_stop", wait)
     result = await runtime._consume_connected(
         broker,
@@ -585,6 +623,62 @@ async def test_database_failure_backs_off_without_recreating_engine(
     assert calls == 2
     assert delays == [0.5]
     assert messages[0].nack_calls == [True]
+
+
+async def test_database_transport_failure_retries_on_same_broker_and_records_requeue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages = [FakeMessage(b"first"), FakeMessage(b"second")]
+    broker = cast(
+        EnrichmentBroker,
+        FakeBroker(FakeIterator(cast(list[object], messages))),
+    )
+    stop = asyncio.Event()
+    metrics = EnrichmentMetrics()
+    calls = 0
+    delays: list[float] = []
+
+    async def handle(*args: object) -> EnrichmentProcessingResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            messages[0].nack_calls.append(True)
+            raise DatabaseTransportError
+        stop.set()
+        return EnrichmentProcessingResult.PROCESSED
+
+    availability = iter((False, True))
+
+    async def database_available(factory: object) -> bool:
+        return next(availability)
+
+    async def wait(event: asyncio.Event, delay: float) -> bool:
+        delays.append(delay)
+        return False
+
+    monkeypatch.setattr(runtime, "handle_message", handle)
+    monkeypatch.setattr(runtime, "_database_available", database_available)
+    monkeypatch.setattr(runtime, "_wait_for_stop", wait)
+    outcome = await runtime._consume_connected(
+        broker,
+        FakeProvider(),
+        cast(Any, object()),
+        settings(),
+        stop,
+        lambda: 0,
+        metrics,
+    )
+
+    assert outcome is runtime._ConsumeOutcome.STOPPED
+    assert calls == 2
+    assert messages[0].nack_calls == [True]
+    assert delays == [0.5, 1.0]
+    assert (
+        metrics.registry.get_sample_value(
+            "signalforge_enrichment_messages_total", {"result": "requeued"}
+        )
+        == 1
+    )
 
 
 async def test_raw_oserror_recycles_broker_generation_without_second_disposition(

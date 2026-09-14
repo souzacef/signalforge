@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from signalforge.consumers.models import ProcessedEvent
+from signalforge.db.errors import DatabaseTransportError
 from signalforge.enrichment.domain import EnrichmentInput, EnrichmentResult
 from signalforge.enrichment.models import TriageEnrichment
 from signalforge.enrichment.provider import (
@@ -135,7 +136,11 @@ async def process_event(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> EnrichmentProcessingResult:
     """Call the provider outside DB scope, then atomically persist receipt and result."""
-    if await _already_processed(event.event_id, session_factory):
+    try:
+        already_processed = await _already_processed(event.event_id, session_factory)
+    except OSError:
+        raise DatabaseTransportError() from None
+    if already_processed:
         return EnrichmentProcessingResult.DUPLICATE
 
     enrichment_input = EnrichmentInput(
@@ -154,7 +159,10 @@ async def process_event(
         )
     except ValidationError:
         raise TransientEnrichmentError(ProviderFailureReason.INVALID_RESPONSE) from None
-    return await _persist_result(event, result, provider, session_factory)
+    try:
+        return await _persist_result(event, result, provider, session_factory)
+    except OSError:
+        raise DatabaseTransportError() from None
 
 
 async def handle_message(
@@ -185,7 +193,7 @@ async def handle_message(
         except PermanentEnrichmentError:
             await message.reject(requeue=False)
             raise
-        except (SQLAlchemyError, OSError):
+        except (SQLAlchemyError, DatabaseTransportError):
             await message.nack(requeue=True)
             raise
 

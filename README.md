@@ -375,26 +375,37 @@ is task-local and reset after every request or delivery.
 
 Authorization values, credentials, connection URLs, request and message bodies,
 Gemini prompts and responses, and raw known exception strings are intentionally
-omitted. Worker and business metrics, distributed tracing, and a local dashboard
-or log aggregation stack remain future Phase 4 work; telemetry is not an API
-readiness dependency.
+omitted. Distributed tracing and a local dashboard or log aggregation stack
+remain future Phase 4 work; telemetry is not an API readiness dependency.
 
-## HTTP metrics
+## Metrics
 
-`GET /metrics` exposes the application-owned Prometheus registry using the
-official exposition content type. It currently contains only total HTTP requests,
-labeled by method, route template, and status code, plus HTTP request-duration
-histograms labeled by method and route template. Request, Incident, event, user,
-and query values are never metric labels; unmatched requests share one fixed
-`__unmatched__` label. Scrapes of `/metrics` are excluded from these traffic
-metrics.
+`GET /metrics` exposes only the API process's explicit Prometheus registry. It
+contains HTTP request counters labeled by method, route template, and status code,
+and HTTP duration histograms labeled by method and route template. Scrapes are
+excluded from those traffic metrics. Unmatched requests share `__unmatched__`.
 
-Metrics are maintained in process and are not persisted. Collection requires no
-PostgreSQL, RabbitMQ, or Gemini access. The endpoint is unauthenticated for
-operational scraping, so production exposure must be restricted by future
-deployment infrastructure. No Prometheus or Grafana service is deployed yet;
-worker and business metrics belong to Phase 4b2, and distributed tracing remains
-future Phase 4c work.
+The standalone dispatcher records `signalforge_outbox_dispatch_total` by bounded
+`event_type` and `result`. The Incident consumer records
+`signalforge_incident_consumer_messages_total` by `result`, and the enrichment
+worker records `signalforge_enrichment_messages_total` by `result`. Gemini calls
+also record `signalforge_enrichment_provider_calls_total` and
+`signalforge_enrichment_provider_duration_seconds` by operator-controlled
+`provider`, `model`, and bounded `result`. Consumer outcomes are `processed`,
+`duplicate`, `rejected`, or `requeued`; provider outcomes are `success`,
+`transient_failure`, `permanent_failure`, or `invalid_response`. Outbox outcomes
+reflect publication, retry, invalid event, lost ownership, ambiguous publication,
+database failure, or release. Unknown outbox event types use a fixed `unknown`
+label. IDs, payloads, error strings, and Incident data are not metric labels.
+
+Every registry is process-local and metrics are not persisted. The dispatcher and
+workers have instrumented registries, but they are not externally scrapeable yet;
+the API `/metrics` endpoint does not expose their counters. There is no worker HTTP
+metrics server and no Prometheus or Grafana deployment. Phase 4b2b can address
+worker scrape surfaces if justified; Phase 4c remains distributed tracing.
+Collection requires no PostgreSQL, RabbitMQ, or Gemini access and is not an API
+readiness dependency. The API endpoint is unauthenticated, so production exposure
+must be restricted by deployment infrastructure.
 
 ## Local authentication
 

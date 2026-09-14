@@ -22,6 +22,8 @@ from signalforge.consumers.runtime import (
     ConsumerSettings,
     run_consumer,
 )
+from signalforge.db.errors import DatabaseTransportError
+from signalforge.observability.metrics import IncidentConsumerMetrics
 
 pytestmark = pytest.mark.anyio
 
@@ -335,6 +337,7 @@ async def test_processed_duplicate_and_invalid_deliveries_continue_sequentially(
     iterator = FakeIterator(cast(list[object], messages))
     broker = cast(ConsumerBroker, FakeBroker(iterator))
     stop = asyncio.Event()
+    metrics = IncidentConsumerMetrics()
     active = 0
     maximum_active = 0
     outcomes: list[bytes] = []
@@ -363,11 +366,28 @@ async def test_processed_duplicate_and_invalid_deliveries_continue_sequentially(
         settings(),
         stop,
         lambda: 0,
+        metrics,
     )
 
     assert result is runtime._ConsumeOutcome.STOPPED
     assert outcomes == [b"0", b"1", b"2", b"3"]
     assert maximum_active == 1
+    for metric_result, count in (("processed", 2), ("duplicate", 1), ("rejected", 1)):
+        assert (
+            metrics.registry.get_sample_value(
+                "signalforge_incident_consumer_messages_total",
+                {"result": metric_result},
+            )
+            == count
+        )
+    assert (
+        sum(
+            sample.value
+            for sample in metrics.messages.collect()[0].samples
+            if sample.name.endswith("_total")
+        )
+        == 4
+    )
 
 
 async def test_database_failure_requeues_then_backs_off_and_continues(
@@ -378,6 +398,7 @@ async def test_database_failure_requeues_then_backs_off_and_continues(
         ConsumerBroker, FakeBroker(FakeIterator(cast(list[object], messages)))
     )
     stop = asyncio.Event()
+    metrics = IncidentConsumerMetrics()
     calls = 0
     delays: list[float] = []
 
@@ -389,11 +410,15 @@ async def test_database_failure_requeues_then_backs_off_and_continues(
         stop.set()
         return ProcessingResult.PROCESSED
 
+    async def database_available(factory: object) -> bool:
+        return True
+
     async def wait(event: asyncio.Event, delay: float) -> bool:
         delays.append(delay)
         return False
 
     monkeypatch.setattr(runtime, "handle_message", handle)
+    monkeypatch.setattr(runtime, "_database_available", database_available)
     monkeypatch.setattr(runtime, "_wait_for_stop", wait)
     result = await runtime._consume_connected(
         broker,
@@ -401,11 +426,78 @@ async def test_database_failure_requeues_then_backs_off_and_continues(
         settings(),
         stop,
         lambda: 0,
+        metrics,
     )
 
     assert result is runtime._ConsumeOutcome.STOPPED
     assert calls == 2
     assert delays == [0.5]
+    assert (
+        metrics.registry.get_sample_value(
+            "signalforge_incident_consumer_messages_total", {"result": "requeued"}
+        )
+        == 1
+    )
+    assert (
+        metrics.registry.get_sample_value(
+            "signalforge_incident_consumer_messages_total", {"result": "processed"}
+        )
+        == 1
+    )
+
+
+async def test_database_transport_failure_retries_on_same_broker_and_records_requeue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages = [FakeMessage(b"first"), FakeMessage(b"second")]
+    broker = cast(
+        ConsumerBroker, FakeBroker(FakeIterator(cast(list[object], messages)))
+    )
+    stop = asyncio.Event()
+    metrics = IncidentConsumerMetrics()
+    calls = 0
+    delays: list[float] = []
+
+    async def handle(message: IncomingMessage, factory: object) -> ProcessingResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            messages[0].nack_calls.append(True)
+            raise DatabaseTransportError
+        stop.set()
+        return ProcessingResult.PROCESSED
+
+    availability = iter((False, True))
+
+    async def database_available(factory: object) -> bool:
+        return next(availability)
+
+    async def wait(event: asyncio.Event, delay: float) -> bool:
+        delays.append(delay)
+        return False
+
+    monkeypatch.setattr(runtime, "handle_message", handle)
+    monkeypatch.setattr(runtime, "_database_available", database_available)
+    monkeypatch.setattr(runtime, "_wait_for_stop", wait)
+    outcome = await runtime._consume_connected(
+        broker,
+        cast(Any, object()),
+        settings(),
+        stop,
+        lambda: 0,
+        metrics,
+    )
+
+    assert outcome is runtime._ConsumeOutcome.STOPPED
+    assert calls == 2
+    assert messages[0].nack_calls == [True]
+    assert delays == [0.5, 1.0]
+    assert (
+        metrics.registry.get_sample_value(
+            "signalforge_incident_consumer_messages_total", {"result": "requeued"}
+        )
+        == 1
+    )
 
 
 async def test_oserror_retires_broken_broker_and_reconnects(

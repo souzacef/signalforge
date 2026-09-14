@@ -1,5 +1,6 @@
-"""Application-owned Prometheus HTTP metrics."""
+"""Application-owned, process-local Prometheus metrics."""
 
+from enum import StrEnum
 from typing import Final
 
 from prometheus_client import CollectorRegistry, Counter, Histogram
@@ -50,3 +51,131 @@ class HttpMetrics:
             status_code=str(status_code),
         ).inc()
         self.duration.labels(method=normalized_method, route=route).observe(duration)
+
+
+class OutboxDispatchMetricResult(StrEnum):
+    PUBLISHED = "published"
+    RETRY_SCHEDULED = "retry_scheduled"
+    INVALID = "invalid"
+    OWNERSHIP_LOST = "ownership_lost"
+    AMBIGUOUS = "ambiguous"
+    DATABASE_FAILED = "database_failed"
+    RELEASED = "released"
+
+
+class MessageMetricResult(StrEnum):
+    PROCESSED = "processed"
+    DUPLICATE = "duplicate"
+    REJECTED = "rejected"
+    REQUEUED = "requeued"
+
+
+class ProviderMetricResult(StrEnum):
+    SUCCESS = "success"
+    TRANSIENT_FAILURE = "transient_failure"
+    PERMANENT_FAILURE = "permanent_failure"
+    INVALID_RESPONSE = "invalid_response"
+
+
+_ALLOWED_EVENT_TYPES: Final = frozenset(
+    {"incident.created", "triage.enrichment.requested"}
+)
+
+
+def _safe_increment(counter: Counter, **labels: str) -> None:
+    """Keep metrics strictly observational if the client ever rejects an update."""
+    try:
+        counter.labels(**labels).inc()
+    except Exception:
+        return
+
+
+def _safe_observe(histogram: Histogram, duration: float, **labels: str) -> None:
+    """Keep observation failures from changing provider outcomes."""
+    try:
+        histogram.labels(**labels).observe(duration)
+    except Exception:
+        return
+
+
+class OutboxMetrics:
+    """Process-local outbox dispatch outcomes with bounded labels."""
+
+    def __init__(self, registry: CollectorRegistry | None = None) -> None:
+        self.registry = registry if registry is not None else CollectorRegistry()
+        self.dispatch = Counter(
+            "signalforge_outbox_dispatch_total",
+            "Final outbox dispatch outcomes.",
+            ("event_type", "result"),
+            registry=self.registry,
+        )
+
+    def record(self, *, event_type: str, result: OutboxDispatchMetricResult) -> None:
+        normalized_type = (
+            event_type if event_type in _ALLOWED_EVENT_TYPES else "unknown"
+        )
+        _safe_increment(self.dispatch, event_type=normalized_type, result=result.value)
+
+
+class IncidentConsumerMetrics:
+    """Process-local Incident consumer delivery outcomes."""
+
+    def __init__(self, registry: CollectorRegistry | None = None) -> None:
+        self.registry = registry if registry is not None else CollectorRegistry()
+        self.messages = Counter(
+            "signalforge_incident_consumer_messages_total",
+            "Final Incident consumer message outcomes.",
+            ("result",),
+            registry=self.registry,
+        )
+
+    def record(self, result: MessageMetricResult) -> None:
+        _safe_increment(self.messages, result=result.value)
+
+
+class EnrichmentMetrics:
+    """Process-local enrichment consumer delivery outcomes."""
+
+    def __init__(self, registry: CollectorRegistry | None = None) -> None:
+        self.registry = registry if registry is not None else CollectorRegistry()
+        self.messages = Counter(
+            "signalforge_enrichment_messages_total",
+            "Final enrichment consumer message outcomes.",
+            ("result",),
+            registry=self.registry,
+        )
+
+    def record(self, result: MessageMetricResult) -> None:
+        _safe_increment(self.messages, result=result.value)
+
+
+class ProviderMetrics:
+    """Gemini call outcomes in the enrichment worker's registry."""
+
+    def __init__(self, registry: CollectorRegistry | None = None) -> None:
+        self.registry = registry if registry is not None else CollectorRegistry()
+        labels = ("provider", "model", "result")
+        self.calls = Counter(
+            "signalforge_enrichment_provider_calls_total",
+            "Enrichment provider call outcomes.",
+            labels,
+            registry=self.registry,
+        )
+        self.duration = Histogram(
+            "signalforge_enrichment_provider_duration_seconds",
+            "Enrichment provider call duration in seconds.",
+            labels,
+            registry=self.registry,
+        )
+
+    def record(
+        self,
+        *,
+        provider: str,
+        model: str,
+        result: ProviderMetricResult,
+        duration: float,
+    ) -> None:
+        labels = {"provider": provider, "model": model, "result": result.value}
+        _safe_increment(self.calls, **labels)
+        _safe_observe(self.duration, duration, **labels)

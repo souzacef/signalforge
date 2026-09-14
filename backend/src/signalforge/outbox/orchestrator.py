@@ -2,7 +2,7 @@
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import StrEnum
 from random import random
@@ -50,6 +50,7 @@ class DispatchOutcome(StrEnum):
 class EventDispatchResult:
     event_id: UUID
     outcome: DispatchOutcome
+    event_type: str = "unknown"
     publication_confirmed: bool = False
     error_code: DispatchErrorCode | None = None
 
@@ -196,6 +197,11 @@ def _summary(
     *,
     publisher_retired: bool,
 ) -> DispatchBatchResult:
+    event_types = {claim.id: claim.event_type for claim in claims}
+    completed_events = tuple(
+        replace(item, event_type=event_types.get(item.event_id, "unknown"))
+        for item in results
+    )
     return DispatchBatchResult(
         claimed=len(claims),
         published=sum(item.outcome is DispatchOutcome.PUBLISHED for item in results),
@@ -208,7 +214,7 @@ def _summary(
         released=sum(item.outcome is DispatchOutcome.RELEASED for item in results),
         failed=sum(item.outcome is DispatchOutcome.DATABASE_FAILED for item in results),
         publisher_retired=publisher_retired,
-        events=tuple(results),
+        events=completed_events,
     )
 
 
