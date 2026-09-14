@@ -380,8 +380,8 @@ remain future Phase 4 work; telemetry is not an API readiness dependency.
 
 ## Metrics
 
-`GET /metrics` exposes only the API process's explicit Prometheus registry. It
-contains HTTP request counters labeled by method, route template, and status code,
+The API metrics target is `http://127.0.0.1:8000/metrics`. It exposes only the
+API process's explicit Prometheus registry and contains HTTP request counters labeled by method, route template, and status code,
 and HTTP duration histograms labeled by method and route template. Scrapes are
 excluded from those traffic metrics. Unmatched requests share `__unmatched__`.
 
@@ -398,14 +398,23 @@ reflect publication, retry, invalid event, lost ownership, ambiguous publication
 database failure, or release. Unknown outbox event types use a fixed `unknown`
 label. IDs, payloads, error strings, and Incident data are not metric labels.
 
-Every registry is process-local and metrics are not persisted. The dispatcher and
-workers have instrumented registries, but they are not externally scrapeable yet;
-the API `/metrics` endpoint does not expose their counters. There is no worker HTTP
-metrics server and no Prometheus or Grafana deployment. Phase 4b2b can address
-worker scrape surfaces if justified; Phase 4c remains distributed tracing.
-Collection requires no PostgreSQL, RabbitMQ, or Gemini access and is not an API
-readiness dependency. The API endpoint is unauthenticated, so production exposure
-must be restricted by deployment infrastructure.
+Every registry is process-local and metrics are not persisted. Local Compose
+publishes these exposition-only worker targets on localhost:
+
+- `http://127.0.0.1:9101/metrics` — dispatcher
+- `http://127.0.0.1:9102/metrics` — Incident consumer
+- `http://127.0.0.1:9103/metrics` — enrichment worker in the `ai` profile
+
+Each endpoint exposes only its owning process's explicit registry, with no default
+Python, GC, or process collectors. The worker servers provide Prometheus
+exposition only; they do not provide health or readiness endpoints. Collection
+requires no PostgreSQL, RabbitMQ, or Gemini access and does not affect API or
+worker readiness.
+
+No Prometheus server, Grafana, or alerting is deployed yet, and distributed
+tracing remains Phase 4c. The endpoints are unauthenticated. Local Compose limits
+worker publication to `127.0.0.1`; production deployment infrastructure must
+restrict scrape network access.
 
 ## Local authentication
 

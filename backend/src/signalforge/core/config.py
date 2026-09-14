@@ -4,6 +4,9 @@ from typing import Annotated
 from pydantic import Field, PostgresDsn, SecretStr, StringConstraints
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+MetricsHost = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+MetricsPort = Annotated[int, Field(ge=1, le=65535)]
+
 
 class DatabaseSettings(BaseSettings):
     """Shared database configuration without API-only requirements."""
