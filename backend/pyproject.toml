@@ -17,6 +17,10 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.52,<2.1",
     "uvicorn>=0.35,<1",
     "prometheus-client>=0.26,<1",
+    "opentelemetry-api>=1.44,<2",
+    "opentelemetry-sdk>=1.44,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
+    "opentelemetry-instrumentation-fastapi>=0.65b0,<0.66",
 ]
 
 [dependency-groups]

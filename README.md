@@ -11,9 +11,8 @@ development straightforward while domain boundaries are still emerging, without
 preventing modules from being separated later when real operational needs justify
 it.
 
-RAG, worker and business metrics, distributed tracing, observability dashboards,
-Angular, Kubernetes, Helm, Terraform, and AWS are planned directions. They are not implemented in
-this phase.
+RAG, observability dashboards, Angular, Kubernetes, Helm, Terraform, and AWS
+are planned directions. They are not implemented in this phase.
 
 ## Prerequisites
 
@@ -375,8 +374,8 @@ is task-local and reset after every request or delivery.
 
 Authorization values, credentials, connection URLs, request and message bodies,
 Gemini prompts and responses, and raw known exception strings are intentionally
-omitted. Distributed tracing and a local dashboard or log aggregation stack
-remain future Phase 4 work; telemetry is not an API readiness dependency.
+omitted. Trace IDs are not added to structured logs in this slice, and telemetry
+is not an API readiness dependency.
 
 ## Metrics
 
@@ -411,10 +410,34 @@ exposition only; they do not provide health or readiness endpoints. Collection
 requires no PostgreSQL, RabbitMQ, or Gemini access and does not affect API or
 worker readiness.
 
-No Prometheus server, Grafana, or alerting is deployed yet, and distributed
-tracing remains Phase 4c. The endpoints are unauthenticated. Local Compose limits
-worker publication to `127.0.0.1`; production deployment infrastructure must
-restrict scrape network access.
+No Prometheus server, Grafana, or alerting is deployed yet. The endpoints are
+unauthenticated. Local Compose limits worker publication to `127.0.0.1`; production
+deployment infrastructure must restrict scrape network access.
+
+## API tracing
+
+The API has a programmatic OpenTelemetry tracing foundation for inbound FastAPI
+requests. Tracing is disabled by default, requires no collector in that state, and
+uses the fixed resource identity `service.name=signalforge-api`. Enable it with
+`SIGNALFORGE_TRACING_ENABLED=true`, set the full OTLP/HTTP protobuf traces endpoint
+with `SIGNALFORGE_OTLP_TRACES_ENDPOINT` (for example,
+`http://127.0.0.1:4318/v1/traces`), and choose a root sampling ratio from `0.0` to
+`1.0` with `SIGNALFORGE_TRACING_SAMPLE_RATIO` (default `1.0`). Production export
+uses the official OTLP HTTP exporter and a batch span processor, so collector
+availability does not affect API requests or readiness.
+
+Normal API routes produce standard FastAPI server spans with route-template names.
+The API accepts W3C Trace Context on incoming HTTP requests and respects upstream
+sampling decisions. `/metrics`, `/health/live`, and `/health/ready` are excluded,
+and ASGI send/receive child spans are disabled. HTTP header capture is not
+configured.
+
+This phase does not provide end-to-end distributed tracing. It does not persist
+trace context in the transactional outbox or propagate it through RabbitMQ, and it
+does not trace consumers or Gemini calls. Phase 4c2 will add asynchronous workflow
+trace continuity. No OpenTelemetry Collector, Tempo, Jaeger, Grafana, or other
+trace backend is deployed yet; Phase 4d will provide the local collector and trace
+backend stack.
 
 ## Local authentication
 
