@@ -16,6 +16,7 @@ dependencies = [
     "python-multipart>=0.0.32,<1",
     "sqlalchemy[asyncio]>=2.0.52,<2.1",
     "uvicorn>=0.35,<1",
+    "prometheus-client>=0.26,<1",
 ]
 
 [dependency-groups]
