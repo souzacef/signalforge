@@ -14,7 +14,13 @@ from opentelemetry.trace import SpanKind, StatusCode
 
 from signalforge.core.config import TracingSettings
 from signalforge.main import create_app
-from signalforge.observability.tracing import TracingRuntime, create_tracing_runtime
+from signalforge.observability.tracing import (
+    API_SERVICE_NAME,
+    DISPATCHER_SERVICE_NAME,
+    INCIDENT_CONSUMER_SERVICE_NAME,
+    TracingRuntime,
+    create_tracing_runtime,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -27,6 +33,7 @@ def tracing_runtime() -> Iterator[tuple[TracingRuntime, InMemorySpanExporter]]:
             tracing_enabled=True,
             otlp_traces_endpoint="http://localhost:4318/v1/traces",
         ),
+        service_name=API_SERVICE_NAME,
         exporter=exporter,
         span_processor_factory=SimpleSpanProcessor,
     )
@@ -56,6 +63,7 @@ async def test_isolated_providers_and_minimal_resource(
             tracing_enabled=True,
             otlp_traces_endpoint="http://localhost:4318/v1/traces",
         ),
+        service_name=API_SERVICE_NAME,
         exporter=second_exporter,
         span_processor_factory=SimpleSpanProcessor,
     )
@@ -230,7 +238,9 @@ async def test_disabled_mode_has_no_exporter_or_instrumentation(
 
     constructor = Mock(side_effect=AssertionError("exporter created"))
     monkeypatch.setattr(tracing_module, "OTLPSpanExporter", constructor)
-    runtime = create_tracing_runtime(TracingSettings(tracing_enabled=False))
+    runtime = create_tracing_runtime(
+        TracingSettings(tracing_enabled=False), service_name=API_SERVICE_NAME
+    )
     app = create_app(tracing=runtime)
     response = await request(app, "GET", "/api/v1/incidents")
     assert response.status_code == 401
@@ -267,6 +277,7 @@ async def test_parent_based_ratio_sampler_respects_upstream_decision() -> None:
             otlp_traces_endpoint="http://localhost:4318/v1/traces",
             tracing_sample_ratio=0.0,
         ),
+        service_name=API_SERVICE_NAME,
         exporter=exporter,
         span_processor_factory=SimpleSpanProcessor,
     )
@@ -296,6 +307,7 @@ async def test_batch_processor_worker_stops_on_shutdown() -> None:
             tracing_enabled=True,
             otlp_traces_endpoint="http://localhost:4318/v1/traces",
         ),
+        service_name=API_SERVICE_NAME,
         exporter=exporter,
     )
     worker_names = {thread.name for thread in threading.enumerate()}
@@ -306,3 +318,39 @@ async def test_batch_processor_worker_stops_on_shutdown() -> None:
     assert "OtelBatchSpanRecordProcessor" not in {
         thread.name for thread in threading.enumerate()
     }
+
+
+@pytest.mark.parametrize(
+    "service_name",
+    [
+        API_SERVICE_NAME,
+        DISPATCHER_SERVICE_NAME,
+        INCIDENT_CONSUMER_SERVICE_NAME,
+    ],
+)
+async def test_runtime_uses_explicit_code_owned_service_identity(
+    service_name: str,
+) -> None:
+    exporter = InMemorySpanExporter()
+    runtime = create_tracing_runtime(
+        TracingSettings(
+            tracing_enabled=True,
+            otlp_traces_endpoint="http://localhost:4318/v1/traces",
+        ),
+        service_name=service_name,
+        exporter=exporter,
+        span_processor_factory=SimpleSpanProcessor,
+    )
+    try:
+        assert runtime.provider is not None
+        assert runtime.provider.resource.attributes["service.name"] == service_name
+    finally:
+        runtime.shutdown()
+
+
+async def test_runtime_rejects_unknown_service_identity() -> None:
+    with pytest.raises(ValueError, match="code-owned"):
+        create_tracing_runtime(
+            TracingSettings(tracing_enabled=False),
+            service_name="user-controlled",  # type: ignore[arg-type]
+        )

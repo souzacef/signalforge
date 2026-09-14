@@ -34,6 +34,8 @@ IMMUTABLE_FIELDS = (
     "payload",
     "occurred_at",
     "created_at",
+    "traceparent",
+    "tracestate",
 )
 
 
@@ -65,6 +67,9 @@ async def seed_events() -> AsyncIterator[SeedEvents]:
                             "nested": {"items": [1, {"ok": True}]},
                         },
                         occurred_at=now - timedelta(days=1),
+                        traceparent="00-0af7651916cd43dd8448eb211c80319c-"
+                        "b7ad6b7169203331-01",
+                        tracestate="vendor=value",
                         created_at=now - timedelta(minutes=2),
                         next_attempt_at=now - timedelta(minutes=1),
                     )
@@ -165,6 +170,8 @@ async def test_concurrent_claimers_skip_locked_on_independent_connections(
         assert row["attempt_count"] == claim.attempt_count == 1
         assert row["claimed_until"] == claim.claimed_until
         assert row["next_attempt_at"] == before[claim.id]["next_attempt_at"]
+        assert claim.traceparent == row["traceparent"]
+        assert claim.tracestate == row["tracestate"]
         assert immutable(row) == immutable(before[claim.id])
     await assert_no_claims()
 

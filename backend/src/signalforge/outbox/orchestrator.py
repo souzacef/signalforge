@@ -8,6 +8,7 @@ from enum import StrEnum
 from random import random
 from uuid import UUID
 
+from opentelemetry.trace import Tracer
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -229,6 +230,7 @@ async def dispatch_batch(
     jitter_source: Callable[[], float] = random,
     retry_base_delay: timedelta = timedelta(seconds=2),
     retry_max_delay: timedelta = timedelta(seconds=300),
+    tracer: Tracer | None = None,
 ) -> DispatchBatchResult:
     """Run one sequential dispatch batch and return only sanitized outcomes.
 
@@ -273,7 +275,10 @@ async def dispatch_batch(
             continue
 
         try:
-            await publisher.publish(claim, timeout=publish_timeout)
+            if tracer is None:
+                await publisher.publish(claim, timeout=publish_timeout)
+            else:
+                await publisher.publish(claim, timeout=publish_timeout, tracer=tracer)
         except (StoredEventError, PublishFailedError) as error:
             results.append(
                 await _settle_publication_failure(

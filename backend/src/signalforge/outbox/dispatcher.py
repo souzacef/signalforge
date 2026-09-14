@@ -9,6 +9,7 @@ from datetime import timedelta
 from random import random
 from typing import Annotated, Self
 
+from opentelemetry.trace import Tracer
 from pydantic import AmqpDsn, Field, model_validator
 from pydantic_settings import SettingsConfigDict
 from sqlalchemy.exc import SQLAlchemyError
@@ -19,12 +20,22 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from signalforge.core.config import DatabaseSettings, MetricsHost, MetricsPort
+from signalforge.core.config import (
+    DatabaseSettings,
+    MetricsHost,
+    MetricsPort,
+    get_tracing_settings,
+)
 from signalforge.observability.exposition import MetricsHttpServer
 from signalforge.observability.logging import configure_logging
 from signalforge.observability.metrics import (
     OutboxDispatchMetricResult,
     OutboxMetrics,
+)
+from signalforge.observability.tracing import (
+    DISPATCHER_SERVICE_NAME,
+    TracingRuntime,
+    create_tracing_runtime,
 )
 from signalforge.outbox.dispatching import retry_delay
 from signalforge.outbox.orchestrator import (
@@ -113,6 +124,7 @@ async def _dispatch_once(
     publisher: RabbitMQPublisher,
     settings: DispatcherSettings,
     jitter_source: Callable[[], float],
+    tracer: Tracer | None = None,
 ) -> DispatchBatchResult:
     return await dispatch_batch(
         session_factory,
@@ -122,6 +134,7 @@ async def _dispatch_once(
         publish_timeout=settings.dispatcher_publish_timeout_seconds,
         settlement_budget=settings.settlement_budget,
         jitter_source=jitter_source,
+        tracer=tracer,
     )
 
 
@@ -188,12 +201,15 @@ async def _run_batch_or_drain(
     settings: DispatcherSettings,
     stop_event: asyncio.Event,
     jitter_source: Callable[[], float],
+    tracer: Tracer | None = None,
 ) -> tuple[DispatchBatchResult | None, bool]:
     """Run one batch, draining it when shutdown wins, then force cancellation."""
     if stop_event.is_set():
         return None, True
     batch_task = asyncio.create_task(
         _dispatch_once(session_factory, publisher, settings, jitter_source)
+        if tracer is None
+        else _dispatch_once(session_factory, publisher, settings, jitter_source, tracer)
     )
     stop_task = asyncio.create_task(stop_event.wait())
     try:
@@ -354,8 +370,26 @@ async def run_dispatcher(
     stop_event: asyncio.Event | None = None,
     jitter_source: Callable[[], float] = random,
     metrics: OutboxMetrics | None = None,
+    tracing: TracingRuntime | None = None,
 ) -> None:
     """Run batches until stopped, owning and cleaning up DB/broker resources."""
+    if tracing is None:
+        try:
+            tracing_runtime = create_tracing_runtime(
+                get_tracing_settings(), service_name=DISPATCHER_SERVICE_NAME
+            )
+        except Exception as error:
+            logger.error(
+                "tracing startup failed",
+                extra={
+                    "event": "tracing_startup_failed",
+                    "exception_type": type(error).__name__,
+                },
+            )
+            tracing_runtime = TracingRuntime()
+    else:
+        tracing_runtime = tracing
+    tracer = tracing_runtime.get_tracer(__name__)
     stop = stop_event or asyncio.Event()
     pipeline_metrics = metrics or OutboxMetrics()
     engine = _create_database_engine(settings)
@@ -403,6 +437,7 @@ async def run_dispatcher(
                     settings,
                     stop,
                     jitter_source,
+                    tracer,
                 )
             # asyncpg can expose connection-resolution failures before SQLAlchemy
             # wraps them, so raw transport OSErrors are database outages here too.
@@ -486,6 +521,16 @@ async def run_dispatcher(
                 logger.error(
                     "dispatcher database resource cleanup failed",
                     extra={"event": "dispatcher_cleanup_failed"},
+                )
+            try:
+                tracing_runtime.shutdown()
+            except Exception as error:
+                logger.error(
+                    "tracing shutdown failed",
+                    extra={
+                        "event": "tracing_shutdown_failed",
+                        "exception_type": type(error).__name__,
+                    },
                 )
             logger.info(
                 "dispatcher stopped",

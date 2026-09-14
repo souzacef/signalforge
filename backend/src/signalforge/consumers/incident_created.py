@@ -2,12 +2,14 @@
 
 import json
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal
-from uuid import uuid4
+from typing import Final, Literal
+from uuid import UUID, uuid4
 
 from aio_pika import IncomingMessage
+from opentelemetry.trace import SpanKind, Tracer
 from pydantic import ValidationError
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -17,6 +19,11 @@ from signalforge.consumers.models import ProcessedEvent
 from signalforge.db.errors import DatabaseTransportError
 from signalforge.incidents.events import IncidentCreated
 from signalforge.observability.logging import bind_log_context
+from signalforge.observability.messaging import mark_span_error, messaging_attributes
+from signalforge.observability.propagation import (
+    capture_current_trace_context,
+    extract_trace_context,
+)
 from signalforge.outbox.models import OutboxEvent
 from signalforge.triage.events import (
     TriageEnrichmentRequested,
@@ -26,6 +33,10 @@ from signalforge.triage.models import IncidentTriage
 from signalforge.triage.rules import determine_triage
 
 CONSUMER_NAME = "incident-created-consumer"
+PROCESS_DESTINATION: Final = (
+    "signalforge.events:incident.created:signalforge.incident-events"
+)
+PROCESS_SPAN_NAME: Final = f"process {PROCESS_DESTINATION}"
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +138,7 @@ async def process_event(
                 incident_occurred_at=event.payload.incident_occurred_at,
             ),
         )
+        trace_context = capture_current_trace_context()
         session.add(
             OutboxEvent(
                 id=enrichment_event.event_id,
@@ -135,16 +147,17 @@ async def process_event(
                 aggregate_id=enrichment_event.aggregate_id,
                 payload=enrichment_event.payload.model_dump(mode="json"),
                 occurred_at=enrichment_event.occurred_at,
+                traceparent=trace_context.traceparent,
+                tracestate=trace_context.tracestate,
             )
         )
     return ProcessingResult.PROCESSED
 
 
-async def handle_message(
+async def _handle_message(
     message: IncomingMessage,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> ProcessingResult:
-    """ACK only after commit; reject poison, requeue transient DB failures."""
     try:
         event = decode_event(message.body)
     except InvalidEventError:
@@ -181,3 +194,48 @@ async def handle_message(
             },
         )
         return result
+
+
+def _safe_message_id(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 36:
+        return None
+    try:
+        normalized = str(UUID(value))
+    except ValueError:
+        return None
+    return normalized if normalized == value.lower() else None
+
+
+async def handle_message(
+    message: IncomingMessage,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    tracer: Tracer | None = None,
+) -> ProcessingResult:
+    """Process and settle one delivery, optionally under one consumer span."""
+    if tracer is None:
+        return await _handle_message(message, session_factory)
+
+    raw_headers = getattr(message, "headers", None)
+    headers = raw_headers if isinstance(raw_headers, Mapping) else None
+    parent_context = extract_trace_context(headers)
+    attributes = messaging_attributes(
+        operation_name="process",
+        operation_type="process",
+        destination_name=PROCESS_DESTINATION,
+        routing_key="incident.created",
+        message_id=_safe_message_id(getattr(message, "message_id", None)),
+    )
+    with tracer.start_as_current_span(
+        PROCESS_SPAN_NAME,
+        context=parent_context,
+        kind=SpanKind.CONSUMER,
+        attributes=attributes,
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        try:
+            return await _handle_message(message, session_factory)
+        except BaseException as error:
+            mark_span_error(span, error)
+            raise

@@ -18,6 +18,7 @@ from aio_pika.abc import (
     AbstractConnection,
     AbstractExchange,
     AbstractRobustConnection,
+    FieldValue,
 )
 from aio_pika.exceptions import (
     AMQPError,
@@ -25,12 +26,18 @@ from aio_pika.exceptions import (
     DeliveryError,
     PublishError,
 )
+from opentelemetry.trace import SpanKind, Tracer
 from pamqp.commands import Basic
 from pamqp.exceptions import PAMQPException
 from pydantic import JsonValue, ValidationError
 from yarl import URL
 
 from signalforge.incidents.events import IncidentCreated, IncidentCreatedPayload
+from signalforge.observability.messaging import mark_span_error, messaging_attributes
+from signalforge.observability.propagation import (
+    extract_trace_context,
+    inject_trace_context,
+)
 from signalforge.outbox.dispatching import ClaimSnapshot, FrozenJSON
 from signalforge.triage.events import (
     TriageEnrichmentRequested,
@@ -269,16 +276,14 @@ class RabbitMQPublisher:
         await _bounded_close(self._channel, self._cleanup_timeout)
         await _bounded_close(self._connection, self._cleanup_timeout)
 
-    async def publish(self, claim: ClaimSnapshot, *, timeout: float) -> None:  # noqa: ASYNC109
-        """Return only for positive confirmation, otherwise raise a sanitized error.
-
-        timeout bounds lock acquisition, channel readiness, send, and confirmation.
-        Failure cleanup may additionally take up to twice cleanup_timeout.
-        No ownership/lease check or database settlement is performed here.
-        """
-        _positive_timeout(timeout)
-        event = reconstruct_event(claim)
-        routing_key = _ROUTING_KEYS[event.event_type]
+    async def _publish_attempt(
+        self,
+        event: PublishableEvent,
+        routing_key: str,
+        *,
+        timeout: float,  # noqa: ASYNC109 - bounded by publish
+        headers: dict[str, FieldValue] | None = None,
+    ) -> None:
         message = Message(
             event.model_dump_json().encode("utf-8"),
             message_id=str(event.event_id),
@@ -286,7 +291,52 @@ class RabbitMQPublisher:
             content_type="application/json",
             content_encoding="utf-8",
             delivery_mode=DeliveryMode.PERSISTENT,
+            headers=headers,
         )
+        await self._channel.ready()
+        confirmation = await self._exchange.publish(
+            message,
+            routing_key=routing_key,
+            mandatory=True,
+            timeout=timeout,
+        )
+        if isinstance(confirmation, (Basic.Nack, Basic.Reject)):
+            raise PublishFailedError(
+                "Broker negatively acknowledged publication",
+                ambiguous=False,
+            )
+        if not isinstance(confirmation, Basic.Ack):
+            raise PublishFailedError(
+                "No positive publisher confirmation; outcome is unknown",
+                ambiguous=True,
+            )
+
+    async def publish(
+        self,
+        claim: ClaimSnapshot,
+        *,
+        timeout: float,  # noqa: ASYNC109 - bounded internally
+        tracer: Tracer | None = None,
+    ) -> None:
+        """Return only for positive confirmation, otherwise raise a sanitized error.
+
+        timeout bounds lock acquisition, channel readiness, send, and confirmation.
+        The optional span covers only one actual network publication attempt.
+        Failure cleanup may additionally take up to twice cleanup_timeout.
+        No ownership/lease check or database settlement is performed here.
+        """
+        _positive_timeout(timeout)
+        event = reconstruct_event(claim)
+        routing_key = _ROUTING_KEYS[event.event_type]
+        parent_context = (
+            extract_trace_context(
+                traceparent=claim.traceparent,
+                tracestate=claim.tracestate,
+            )
+            if tracer is not None
+            else None
+        )
+        destination = f"{EXCHANGE_NAME}:{routing_key}"
         try:
             async with asyncio.timeout(timeout):
                 async with self._publish_lock:
@@ -294,23 +344,41 @@ class RabbitMQPublisher:
                         raise PublishFailedError(
                             "Publisher is retired; open a new instance", ambiguous=False
                         )
-                    await self._channel.ready()
-                    confirmation = await self._exchange.publish(
-                        message,
-                        routing_key=routing_key,
-                        mandatory=True,
-                        timeout=timeout,
-                    )
-                    if isinstance(confirmation, (Basic.Nack, Basic.Reject)):
-                        raise PublishFailedError(
-                            "Broker negatively acknowledged publication",
-                            ambiguous=False,
+                    if tracer is None:
+                        await self._publish_attempt(
+                            event,
+                            routing_key,
+                            timeout=timeout,
                         )
-                    if not isinstance(confirmation, Basic.Ack):
-                        raise PublishFailedError(
-                            "No positive publisher confirmation; outcome is unknown",
-                            ambiguous=True,
-                        )
+                    else:
+                        with tracer.start_as_current_span(
+                            f"publish {destination}",
+                            context=parent_context,
+                            kind=SpanKind.PRODUCER,
+                            attributes=messaging_attributes(
+                                operation_name="publish",
+                                operation_type="send",
+                                destination_name=destination,
+                                routing_key=routing_key,
+                                message_id=str(event.event_id),
+                            ),
+                            record_exception=False,
+                            set_status_on_exception=False,
+                        ) as span:
+                            try:
+                                headers = cast(
+                                    dict[str, FieldValue],
+                                    inject_trace_context().as_dict(),
+                                )
+                                await self._publish_attempt(
+                                    event,
+                                    routing_key,
+                                    timeout=timeout,
+                                    headers=headers,
+                                )
+                            except BaseException as error:
+                                mark_span_error(span, error)
+                                raise
         except PublishError:
             # aiormq raises this on mandatory return BEFORE processing any ACK.
             raise UnroutablePublishError() from None

@@ -12,6 +12,11 @@ import pytest
 from aio_pika import DeliveryMode, IncomingMessage, Message
 from aio_pika.abc import AbstractQueue
 from httpx import AsyncClient
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
+from opentelemetry.trace import SpanKind
 from pamqp.commands import Basic
 from sqlalchemy import delete, func, select
 from sqlalchemy import event as sa_event
@@ -28,9 +33,14 @@ from signalforge.consumers.incident_created import (
     process_event,
 )
 from signalforge.consumers.models import ProcessedEvent
+from signalforge.core.config import TracingSettings
 from signalforge.db.session import engine
 from signalforge.incidents.events import IncidentCreated, IncidentCreatedPayload
 from signalforge.incidents.models import Incident, IncidentSeverity
+from signalforge.observability.tracing import (
+    INCIDENT_CONSUMER_SERVICE_NAME,
+    create_tracing_runtime,
+)
 from signalforge.outbox.models import OutboxEvent
 from signalforge.outbox.rabbitmq import (
     ENRICHMENT_ROUTING_KEY,
@@ -58,8 +68,12 @@ class FakeMessage:
         *,
         on_ack: Callable[[], None] | None = None,
         ack_error: BaseException | None = None,
+        headers: dict[str, object] | None = None,
+        message_id: str | None = None,
     ) -> None:
         self.body = body
+        self.headers = headers
+        self.message_id = message_id
         self.on_ack = on_ack
         self.ack_error = ack_error
         self.ack_calls = 0
@@ -242,6 +256,8 @@ async def test_first_processing_atomically_creates_all_three_durable_effects(
     assert request.occurred_at.tzinfo is not None
     assert request.published_at is None
     assert request.claim_token is request.claimed_until is None
+    assert request.traceparent is None
+    assert request.tracestate is None
     request_payload = request.payload.copy()
     incident_occurred_at = request_payload.pop("incident_occurred_at")
     assert isinstance(incident_occurred_at, str)
@@ -589,3 +605,58 @@ async def test_real_malformed_message_is_rejected_without_requeue(
     assert await ledger_rows() == []
     assert await triage_rows() == []
     assert await enrichment_rows() == []
+
+
+async def test_process_span_context_is_persisted_on_enrichment_intent(
+    incident_event: IncidentCreated,
+) -> None:
+    trace_id = "0af7651916cd43dd8448eb211c80319c"
+    producer_id = "b7ad6b7169203331"
+    exporter = InMemorySpanExporter()
+    tracing = create_tracing_runtime(
+        TracingSettings(
+            tracing_enabled=True,
+            otlp_traces_endpoint="http://localhost:4318/v1/traces",
+        ),
+        service_name=INCIDENT_CONSUMER_SERVICE_NAME,
+        exporter=exporter,
+        span_processor_factory=SimpleSpanProcessor,
+    )
+    fake = FakeMessage(
+        incident_event.model_dump_json().encode(),
+        headers={
+            "traceparent": f"00-{trace_id}-{producer_id}-01",
+            "tracestate": "vendor=value",
+            "baggage": "private=must-not-persist",
+        },
+        message_id=str(incident_event.event_id),
+    )
+    try:
+        tracer = tracing.get_tracer("test.integration.consumer")
+        assert tracer is not None
+        result = await handle_message(incoming(fake), sessions, tracer=tracer)
+
+        assert result is ProcessingResult.PROCESSED
+        assert fake.ack_calls == 1
+        (process_span,) = [
+            span
+            for span in exporter.get_finished_spans()
+            if span.kind is SpanKind.CONSUMER
+        ]
+        assert process_span.context is not None
+        assert process_span.parent is not None
+        assert process_span.parent.span_id == int(producer_id, 16)
+
+        (outbox,) = await enrichment_rows()
+        assert outbox.traceparent is not None
+        parts = outbox.traceparent.split("-")
+        assert parts[1] == trace_id
+        assert parts[2] == f"{process_span.context.span_id:016x}"
+        assert parts[3] == "01"
+        assert outbox.tracestate == "vendor=value"
+        serialized_payload = outbox.payload.copy()
+        assert "traceparent" not in serialized_payload
+        assert "tracestate" not in serialized_payload
+        assert "baggage" not in serialized_payload
+    finally:
+        tracing.shutdown()

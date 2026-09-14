@@ -414,30 +414,53 @@ No Prometheus server, Grafana, or alerting is deployed yet. The endpoints are
 unauthenticated. Local Compose limits worker publication to `127.0.0.1`; production
 deployment infrastructure must restrict scrape network access.
 
-## API tracing
+## Distributed tracing
 
-The API has a programmatic OpenTelemetry tracing foundation for inbound FastAPI
-requests. Tracing is disabled by default, requires no collector in that state, and
-uses the fixed resource identity `service.name=signalforge-api`. Enable it with
-`SIGNALFORGE_TRACING_ENABLED=true`, set the full OTLP/HTTP protobuf traces endpoint
-with `SIGNALFORGE_OTLP_TRACES_ENDPOINT` (for example,
-`http://127.0.0.1:4318/v1/traces`), and choose a root sampling ratio from `0.0` to
-`1.0` with `SIGNALFORGE_TRACING_SAMPLE_RATIO` (default `1.0`). Production export
-uses the official OTLP HTTP exporter and a batch span processor, so collector
-availability does not affect API requests or readiness.
+SignalForge has explicit OpenTelemetry runtimes for the API, dispatcher, and
+Incident consumer, with fixed resource identities `signalforge-api`,
+`signalforge-dispatcher`, and `signalforge-incident-consumer`. Tracing is disabled
+by default and requires no collector in that state. All three runtimes use
+`SIGNALFORGE_TRACING_ENABLED`, the full OTLP/HTTP protobuf endpoint in
+`SIGNALFORGE_OTLP_TRACES_ENDPOINT`, and the root sampling ratio from `0.0` to `1.0`
+in `SIGNALFORGE_TRACING_SAMPLE_RATIO` (default `1.0`). Each process owns an
+isolated provider and shuts it down with its existing lifecycle; no global provider
+is installed.
 
-Normal API routes produce standard FastAPI server spans with route-template names.
-The API accepts W3C Trace Context on incoming HTTP requests and respects upstream
-sampling decisions. `/metrics`, `/health/live`, and `/health/ready` are excluded,
-and ASGI send/receive child spans are disabled. HTTP header capture is not
-configured.
+Normal API routes produce FastAPI server spans with route-template names. The API
+accepts W3C Trace Context and respects upstream sampling decisions.
+`/metrics`, `/health/live`, and `/health/ready` are excluded, ASGI send/receive
+child spans are disabled, and HTTP header capture is not configured.
 
-This phase does not provide end-to-end distributed tracing. It does not persist
-trace context in the transactional outbox or propagate it through RabbitMQ, and it
-does not trace consumers or Gemini calls. Phase 4c2 will add asynchronous workflow
-trace continuity. No OpenTelemetry Collector, Tempo, Jaeger, Grafana, or other
-trace backend is deployed yet; Phase 4d will provide the local collector and trace
-backend stack.
+Incident creation captures the active server span's W3C `traceparent` and optional
+`tracestate` on the transactional outbox row. The dispatcher continues that
+durable context with one RabbitMQ producer span per actual confirmed-publication
+attempt and injects the active producer context into AMQP headers. The Incident
+consumer uses those headers as the parent of one process span covering the
+existing transaction and message disposition. Its
+`triage.enrichment.requested` outbox row then captures the active process span,
+allowing a later stage to continue the workflow:
+
+```text
+API SERVER span
+  -> durable incident.created outbox context
+  -> RabbitMQ PRODUCER span and W3C headers
+  -> Incident CONSUMER span
+  -> durable triage.enrichment.requested outbox context
+```
+
+`traceparent` and `tracestate` are nullable, bounded transport metadata outside the
+domain event JSON and public schemas. SignalForge uses
+`TraceContextTextMapPropagator` directly and does not propagate baggage. Missing,
+malformed, oversized, or wrongly typed tracing metadata is ignored and never
+changes business validation, ACK/NACK/reject behavior, or retry settlement.
+
+At-least-once delivery also applies to telemetry: each publication attempt and
+each delivery or redelivery creates a separate span. Producer retries are siblings
+under the original durable causal parent, and no exactly-once tracing guarantee is
+made. The enrichment consumer and Gemini continuation remain Phase 4c2b, so this
+phase does not claim a complete AI trace. No OpenTelemetry Collector, Tempo,
+Jaeger, Grafana, or other trace backend is deployed yet; Phase 4d will provide the
+local collector and trace backend stack.
 
 ## Local authentication
 

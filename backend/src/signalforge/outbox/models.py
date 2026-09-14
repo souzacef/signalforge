@@ -63,6 +63,8 @@ class OutboxEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    traceparent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    tracestate: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

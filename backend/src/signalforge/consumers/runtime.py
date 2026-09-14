@@ -20,6 +20,7 @@ from aio_pika.abc import (
     AbstractQueueIterator,
 )
 from aio_pika.exceptions import AMQPError, ChannelInvalidStateError
+from opentelemetry.trace import Tracer
 from pamqp.exceptions import PAMQPException
 from pydantic import AmqpDsn, Field, model_validator
 from pydantic_settings import SettingsConfigDict
@@ -38,7 +39,12 @@ from signalforge.consumers.incident_created import (
     ProcessingResult,
     handle_message,
 )
-from signalforge.core.config import DatabaseSettings, MetricsHost, MetricsPort
+from signalforge.core.config import (
+    DatabaseSettings,
+    MetricsHost,
+    MetricsPort,
+    get_tracing_settings,
+)
 from signalforge.db.errors import DatabaseTransportError
 from signalforge.observability.exposition import MetricsHttpServer
 from signalforge.observability.logging import (
@@ -49,6 +55,11 @@ from signalforge.observability.logging import (
 from signalforge.observability.metrics import (
     IncidentConsumerMetrics,
     MessageMetricResult,
+)
+from signalforge.observability.tracing import (
+    INCIDENT_CONSUMER_SERVICE_NAME,
+    TracingRuntime,
+    create_tracing_runtime,
 )
 from signalforge.outbox.dispatching import retry_delay
 from signalforge.outbox.rabbitmq import QUEUE_NAME, declare_topology
@@ -270,6 +281,7 @@ async def _run_handler_with_context(
     session_factory: async_sessionmaker[AsyncSession],
     settings: ConsumerSettings,
     stop_event: asyncio.Event,
+    tracer: Tracer | None = None,
 ) -> tuple[ProcessingResult | None, bool]:
     if stop_event.is_set():
         await _requeue_unstarted(message)
@@ -277,6 +289,10 @@ async def _run_handler_with_context(
 
     handler_task = asyncio.create_task(
         handle_message(cast(IncomingMessage, message), session_factory)
+        if tracer is None
+        else handle_message(
+            cast(IncomingMessage, message), session_factory, tracer=tracer
+        )
     )
     stop_task = asyncio.create_task(stop_event.wait())
     try:
@@ -314,11 +330,16 @@ async def _run_handler_or_drain(
     session_factory: async_sessionmaker[AsyncSession],
     settings: ConsumerSettings,
     stop_event: asyncio.Event,
+    tracer: Tracer | None = None,
 ) -> tuple[ProcessingResult | None, bool]:
     context = delivery_log_context(message, consumer_name=CONSUMER_NAME)
     with bind_log_context(**context):
+        if tracer is None:
+            return await _run_handler_with_context(
+                message, session_factory, settings, stop_event
+            )
         return await _run_handler_with_context(
-            message, session_factory, settings, stop_event
+            message, session_factory, settings, stop_event, tracer
         )
 
 
@@ -329,6 +350,7 @@ async def _consume_connected(
     stop_event: asyncio.Event,
     jitter_source: Callable[[], float],
     metrics: IncidentConsumerMetrics | None = None,
+    tracer: Tracer | None = None,
 ) -> _ConsumeOutcome:
     pipeline_metrics = metrics or IncidentConsumerMetrics()
     database_failures = 0
@@ -347,12 +369,21 @@ async def _consume_connected(
                     message, consumer_name=CONSUMER_NAME
                 )
                 try:
-                    result, stopping = await _run_handler_or_drain(
-                        message,
-                        session_factory,
-                        settings,
-                        stop_event,
-                    )
+                    if tracer is None:
+                        result, stopping = await _run_handler_or_drain(
+                            message,
+                            session_factory,
+                            settings,
+                            stop_event,
+                        )
+                    else:
+                        result, stopping = await _run_handler_or_drain(
+                            message,
+                            session_factory,
+                            settings,
+                            stop_event,
+                            tracer,
+                        )
                 except InvalidEventError as error:
                     database_failures = 0
                     pipeline_metrics.record(MessageMetricResult.REJECTED)
@@ -469,8 +500,26 @@ async def run_consumer(
     stop_event: asyncio.Event | None = None,
     jitter_source: Callable[[], float] = random,
     metrics: IncidentConsumerMetrics | None = None,
+    tracing: TracingRuntime | None = None,
 ) -> None:
     """Consume sequentially until stopped, owning all DB/broker resources."""
+    if tracing is None:
+        try:
+            tracing_runtime = create_tracing_runtime(
+                get_tracing_settings(), service_name=INCIDENT_CONSUMER_SERVICE_NAME
+            )
+        except Exception as error:
+            logger.error(
+                "tracing startup failed",
+                extra={
+                    "event": "tracing_startup_failed",
+                    "exception_type": type(error).__name__,
+                },
+            )
+            tracing_runtime = TracingRuntime()
+    else:
+        tracing_runtime = tracing
+    tracer = tracing_runtime.get_tracer(__name__)
     stop = stop_event or asyncio.Event()
     pipeline_metrics = metrics or IncidentConsumerMetrics()
     engine = _create_database_engine(settings)
@@ -509,14 +558,25 @@ async def run_consumer(
                 )
 
             try:
-                outcome = await _consume_connected(
-                    broker,
-                    session_factory,
-                    settings,
-                    stop,
-                    jitter_source,
-                    pipeline_metrics,
-                )
+                if tracer is None:
+                    outcome = await _consume_connected(
+                        broker,
+                        session_factory,
+                        settings,
+                        stop,
+                        jitter_source,
+                        pipeline_metrics,
+                    )
+                else:
+                    outcome = await _consume_connected(
+                        broker,
+                        session_factory,
+                        settings,
+                        stop,
+                        jitter_source,
+                        pipeline_metrics,
+                        tracer,
+                    )
             except _BROKER_ERRORS:
                 outcome = _ConsumeOutcome.BROKER_UNAVAILABLE
 
@@ -552,6 +612,16 @@ async def run_consumer(
                 logger.error(
                     "consumer database resource cleanup failed",
                     extra={"event": "consumer_cleanup_failed"},
+                )
+            try:
+                tracing_runtime.shutdown()
+            except Exception as error:
+                logger.error(
+                    "tracing shutdown failed",
+                    extra={
+                        "event": "tracing_shutdown_failed",
+                        "exception_type": type(error).__name__,
+                    },
                 )
             logger.info(
                 "consumer stopped", extra={"event": "consumer_shutdown_complete"}
