@@ -416,51 +416,62 @@ deployment infrastructure must restrict scrape network access.
 
 ## Distributed tracing
 
-SignalForge has explicit OpenTelemetry runtimes for the API, dispatcher, and
-Incident consumer, with fixed resource identities `signalforge-api`,
-`signalforge-dispatcher`, and `signalforge-incident-consumer`. Tracing is disabled
-by default and requires no collector in that state. All three runtimes use
-`SIGNALFORGE_TRACING_ENABLED`, the full OTLP/HTTP protobuf endpoint in
-`SIGNALFORGE_OTLP_TRACES_ENDPOINT`, and the root sampling ratio from `0.0` to `1.0`
-in `SIGNALFORGE_TRACING_SAMPLE_RATIO` (default `1.0`). Each process owns an
-isolated provider and shuts it down with its existing lifecycle; no global provider
-is installed.
+SignalForge has explicit OpenTelemetry runtimes for the API, dispatcher, Incident
+consumer, and enrichment worker, with fixed resource identities
+`signalforge-api`, `signalforge-dispatcher`, `signalforge-incident-consumer`, and
+`signalforge-enrichment-worker`. Tracing is disabled by default and requires no
+collector in that state. All runtimes use `SIGNALFORGE_TRACING_ENABLED`, the full
+OTLP/HTTP protobuf endpoint in `SIGNALFORGE_OTLP_TRACES_ENDPOINT`, and the root
+sampling ratio from `0.0` to `1.0` in `SIGNALFORGE_TRACING_SAMPLE_RATIO` (default
+`1.0`). Each process owns an isolated provider and shuts it down with its existing
+lifecycle; no global provider is installed.
 
 Normal API routes produce FastAPI server spans with route-template names. The API
 accepts W3C Trace Context and respects upstream sampling decisions.
 `/metrics`, `/health/live`, and `/health/ready` are excluded, ASGI send/receive
 child spans are disabled, and HTTP header capture is not configured.
 
-Incident creation captures the active server span's W3C `traceparent` and optional
-`tracestate` on the transactional outbox row. The dispatcher continues that
-durable context with one RabbitMQ producer span per actual confirmed-publication
-attempt and injects the active producer context into AMQP headers. The Incident
-consumer uses those headers as the parent of one process span covering the
-existing transaction and message disposition. Its
-`triage.enrichment.requested` outbox row then captures the active process span,
-allowing a later stage to continue the workflow:
+The current Incident-enrichment path has end-to-end distributed trace continuity
+when tracing is enabled:
 
 ```text
 API SERVER span
   -> durable incident.created outbox context
   -> RabbitMQ PRODUCER span and W3C headers
-  -> Incident CONSUMER span
+  -> Incident CONSUMER PROCESS span
   -> durable triage.enrichment.requested outbox context
+  -> RabbitMQ PRODUCER span and W3C headers
+  -> enrichment CONSUMER PROCESS span
+  -> Gemini CLIENT span
 ```
+
+The enrichment PROCESS span covers decoding, duplicate preflight, the provider
+call, persistence, and final message disposition. The Gemini CLIENT child covers
+one logical `generate_content` operation. Gemini trace metadata is limited to the
+safe operation name, the OpenTelemetry provider identity `gcp.gemini`, the
+configured bounded model name, and JSON output type. SignalForge's persisted
+provider identity remains `gemini`.
+
+SignalForge does not export prompts, system instructions, Incident content,
+model responses, parsed enrichment results, API keys, HTTP headers, or endpoint
+URLs in span names, attributes, events, or status descriptions. The narrow local
+`gen_ai.*` attributes follow the current Development-stage OpenTelemetry GenAI
+conventions and may need adjustment when those conventions stabilize.
 
 `traceparent` and `tracestate` are nullable, bounded transport metadata outside the
 domain event JSON and public schemas. SignalForge uses
 `TraceContextTextMapPropagator` directly and does not propagate baggage. Missing,
 malformed, oversized, or wrongly typed tracing metadata is ignored and never
-changes business validation, ACK/NACK/reject behavior, or retry settlement.
+changes business validation, provider classification, database behavior, or
+ACK/NACK/reject settlement.
 
 At-least-once delivery also applies to telemetry: each publication attempt and
 each delivery or redelivery creates a separate span. Producer retries are siblings
-under the original durable causal parent, and no exactly-once tracing guarantee is
-made. The enrichment consumer and Gemini continuation remain Phase 4c2b, so this
-phase does not claim a complete AI trace. No OpenTelemetry Collector, Tempo,
-Jaeger, Grafana, or other trace backend is deployed yet; Phase 4d will provide the
-local collector and trace backend stack.
+under the original durable causal parent, duplicate deliveries still produce
+PROCESS spans, and no exactly-once tracing guarantee is made. Remediation tracing
+is outside the current path. No OpenTelemetry Collector, Tempo, Jaeger, Grafana,
+or other trace backend is deployed yet; Phase 4d will provide the local collector
+and trace backend stack.
 
 ## Local authentication
 

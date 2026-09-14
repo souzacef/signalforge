@@ -130,8 +130,9 @@ async def test_enrichment_exposes_shared_worker_and_provider_registry(
         lambda registry, **kwargs: exposed.append(registry) or server,
     )
 
-    def provider(settings: object, *, metrics: Any) -> object:
+    def provider(settings: object, *, metrics: Any, tracer: object) -> object:
         provider_registries.append(metrics.registry)
+        assert tracer is None
         return object()
 
     async def run(*args: object, **kwargs: Any) -> None:
