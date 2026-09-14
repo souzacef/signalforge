@@ -410,9 +410,10 @@ exposition only; they do not provide health or readiness endpoints. Collection
 requires no PostgreSQL, RabbitMQ, or Gemini access and does not affect API or
 worker readiness.
 
-No Prometheus server, Grafana, or alerting is deployed yet. The endpoints are
-unauthenticated. Local Compose limits worker publication to `127.0.0.1`; production
-deployment infrastructure must restrict scrape network access.
+The optional local observability profile adds Prometheus and Grafana without
+changing these endpoints. The endpoints are unauthenticated. Local Compose limits
+worker publication to `127.0.0.1`; production deployment infrastructure must
+restrict scrape network access.
 
 ## Distributed tracing
 
@@ -469,9 +470,70 @@ At-least-once delivery also applies to telemetry: each publication attempt and
 each delivery or redelivery creates a separate span. Producer retries are siblings
 under the original durable causal parent, duplicate deliveries still produce
 PROCESS spans, and no exactly-once tracing guarantee is made. Remediation tracing
-is outside the current path. No OpenTelemetry Collector, Tempo, Jaeger, Grafana,
-or other trace backend is deployed yet; Phase 4d will provide the local collector
-and trace backend stack.
+is outside the current path. The optional local observability profile described
+below provides the Collector, Tempo, Prometheus, and Grafana; Jaeger is not part
+of the stack.
+
+## Local observability
+
+The `observability` Compose profile adds local-development infrastructure around
+the existing application telemetry. It is opt-in: ordinary
+`podman compose up -d` still starts only the deterministic core stack and does
+not require the Collector, Tempo, Prometheus, or Grafana.
+
+Enable application tracing and start the core stack plus observability services:
+
+```sh
+SIGNALFORGE_TRACING_ENABLED=true \
+  podman compose --profile observability up -d
+```
+
+Add the optional enrichment worker with both profiles. This path also requires a
+real `SIGNALFORGE_GEMINI_API_KEY` in `.env`:
+
+```sh
+SIGNALFORGE_TRACING_ENABLED=true \
+  podman compose --profile observability --profile ai up -d
+```
+
+Docker Compose uses the same profile names and command structure; replace
+`podman compose` with `docker compose`. Prometheus always includes the
+`signalforge-enrichment-worker` scrape target. It is expected to show `DOWN`
+when the `ai` profile is not running.
+
+The local endpoints are:
+
+- SignalForge API: <http://127.0.0.1:8000>
+- Grafana: <http://127.0.0.1:3000>
+- Prometheus: <http://127.0.0.1:9090>
+- Collector OTLP/HTTP: <http://127.0.0.1:4318>
+
+Set `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` to override the local
+Grafana login. The example `admin` / `signalforge-local` credentials are for
+localhost development only. Prometheus is provisioned as Grafana's default data
+source, and Tempo is provisioned for trace search and span-tree inspection in
+Explore. No dashboard, alert rules, trace-to-logs links, or exemplar links are
+provisioned in this phase.
+
+Telemetry follows these paths:
+
+```text
+SignalForge /metrics -> Prometheus -> Grafana
+SignalForge OTLP/HTTP -> OpenTelemetry Collector -> Tempo -> Grafana
+```
+
+Structured JSON logs remain on container standard output; this stack does not
+centralize logs. All newly published observability ports bind to `127.0.0.1`,
+and Tempo remains available only inside the Compose network. When running an
+instrumented SignalForge process directly on the host, override
+`SIGNALFORGE_OTLP_TRACES_ENDPOINT` with
+`http://127.0.0.1:4318/v1/traces`.
+
+The profile is local-development infrastructure. Tempo, Prometheus, and Grafana
+need production-specific authentication, network controls, durable storage, and
+retention design before any internet-facing deployment. The local Grafana
+credentials are not production credentials. None of the observability services
+participates in SignalForge liveness, readiness, or business correctness.
 
 ## Local authentication
 
