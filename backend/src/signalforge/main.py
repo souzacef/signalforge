@@ -1,22 +1,30 @@
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from time import perf_counter
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request, Response
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.metrics import NoOpMeterProvider
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import PlainTextResponse
 
 from signalforge.api.health import router as health_router
 from signalforge.auth.router import router as auth_router
-from signalforge.core.config import get_settings
+from signalforge.core.config import get_settings, get_tracing_settings
 from signalforge.enrichment.router import router as enrichment_router
 from signalforge.incidents.router import router as incidents_router
 from signalforge.observability.logging import bind_log_context, configure_logging
 from signalforge.observability.metrics import UNMATCHED_ROUTE, HttpMetrics
+from signalforge.observability.tracing import TracingRuntime, create_tracing_runtime
 from signalforge.triage.router import router as triage_router
 
 logger = logging.getLogger(__name__)
+_TRACING_EXCLUDED_URLS = (
+    r"/metrics(?:\?.*)?$,/health/live(?:\?.*)?$,/health/ready(?:\?.*)?$"
+)
 
 
 def _request_id(value: str | None) -> str:
@@ -37,13 +45,35 @@ def _route_path(request: Request) -> str:
     return path if isinstance(path, str) else "/unmatched"
 
 
-def create_app(http_metrics: HttpMetrics | None = None) -> FastAPI:
+def create_app(
+    http_metrics: HttpMetrics | None = None,
+    tracing: TracingRuntime | None = None,
+) -> FastAPI:
     """Create and configure the SignalForge API application."""
     configure_logging("signalforge-api")
     settings = get_settings()
-    application = FastAPI(title=settings.app_name)
+    tracing_runtime = tracing or create_tracing_runtime(get_tracing_settings())
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            try:
+                tracing_runtime.shutdown()
+            except Exception as error:
+                logger.error(
+                    "tracing shutdown failed",
+                    extra={
+                        "event": "tracing_shutdown_failed",
+                        "exception_type": type(error).__name__,
+                    },
+                )
+
+    application = FastAPI(title=settings.app_name, lifespan=lifespan)
     metrics = http_metrics or HttpMetrics()
     application.state.http_metrics = metrics
+    application.state.tracing = tracing_runtime
     # The application completion event replaces Uvicorn's duplicate access line.
     logging.getLogger("uvicorn.access").disabled = True
 
@@ -112,6 +142,14 @@ def create_app(http_metrics: HttpMetrics | None = None) -> FastAPI:
     application.include_router(incidents_router)
     application.include_router(triage_router)
     application.include_router(enrichment_router)
+    if tracing_runtime.provider is not None:
+        FastAPIInstrumentor.instrument_app(
+            application,
+            tracer_provider=tracing_runtime.provider,
+            meter_provider=NoOpMeterProvider(),
+            excluded_urls=_TRACING_EXCLUDED_URLS,
+            exclude_spans=["send", "receive"],
+        )
     return application
 
 
