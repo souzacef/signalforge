@@ -31,6 +31,9 @@ services:
       SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-signalforge}:${POSTGRES_PASSWORD:-signalforge-local}@postgres:5432/${POSTGRES_DB:-signalforge}
       SIGNALFORGE_JWT_SECRET: ${SIGNALFORGE_JWT_SECRET:?Set SIGNALFORGE_JWT_SECRET in .env}
       SIGNALFORGE_ACCESS_TOKEN_EXPIRE_MINUTES: ${SIGNALFORGE_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      SIGNALFORGE_TRACING_ENABLED: ${SIGNALFORGE_TRACING_ENABLED:-false}
+      SIGNALFORGE_OTLP_TRACES_ENDPOINT: ${SIGNALFORGE_OTLP_TRACES_ENDPOINT:-http://otel-collector:4318/v1/traces}
+      SIGNALFORGE_TRACING_SAMPLE_RATIO: ${SIGNALFORGE_TRACING_SAMPLE_RATIO:-1.0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +84,9 @@ services:
       SIGNALFORGE_RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-signalforge}:${RABBITMQ_DEFAULT_PASS:-signalforge-local}@rabbitmq:5672/signalforge
       SIGNALFORGE_METRICS_HOST: 0.0.0.0
       SIGNALFORGE_METRICS_PORT: 9101
+      SIGNALFORGE_TRACING_ENABLED: ${SIGNALFORGE_TRACING_ENABLED:-false}
+      SIGNALFORGE_OTLP_TRACES_ENDPOINT: ${SIGNALFORGE_OTLP_TRACES_ENDPOINT:-http://otel-collector:4318/v1/traces}
+      SIGNALFORGE_TRACING_SAMPLE_RATIO: ${SIGNALFORGE_TRACING_SAMPLE_RATIO:-1.0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,6 +104,9 @@ services:
       SIGNALFORGE_RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-signalforge}:${RABBITMQ_DEFAULT_PASS:-signalforge-local}@rabbitmq:5672/signalforge
       SIGNALFORGE_METRICS_HOST: 0.0.0.0
       SIGNALFORGE_METRICS_PORT: 9102
+      SIGNALFORGE_TRACING_ENABLED: ${SIGNALFORGE_TRACING_ENABLED:-false}
+      SIGNALFORGE_OTLP_TRACES_ENDPOINT: ${SIGNALFORGE_OTLP_TRACES_ENDPOINT:-http://otel-collector:4318/v1/traces}
+      SIGNALFORGE_TRACING_SAMPLE_RATIO: ${SIGNALFORGE_TRACING_SAMPLE_RATIO:-1.0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,12 +128,67 @@ services:
       SIGNALFORGE_GEMINI_MODEL: ${SIGNALFORGE_GEMINI_MODEL:-gemini-3.8-flash}
       SIGNALFORGE_METRICS_HOST: 0.0.0.0
       SIGNALFORGE_METRICS_PORT: 9103
+      SIGNALFORGE_TRACING_ENABLED: ${SIGNALFORGE_TRACING_ENABLED:-false}
+      SIGNALFORGE_OTLP_TRACES_ENDPOINT: ${SIGNALFORGE_OTLP_TRACES_ENDPOINT:-http://otel-collector:4318/v1/traces}
+      SIGNALFORGE_TRACING_SAMPLE_RATIO: ${SIGNALFORGE_TRACING_SAMPLE_RATIO:-1.0}
     depends_on:
       postgres:
         condition: service_healthy
     ports:
       - "127.0.0.1:${ENRICHMENT_METRICS_PORT:-9103}:9103"
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    profiles:
+      - observability
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro,Z
+    ports:
+      - "127.0.0.1:${OTEL_HTTP_PORT:-4318}:4318"
+
+  tempo:
+    image: grafana/tempo:3.0.2
+    profiles:
+      - observability
+    command:
+      - -config.file=/etc/tempo.yaml
+      - -target=all
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo.yaml:ro,Z
+      - signalforge-tempo-data:/var/tempo
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    profiles:
+      - observability
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
+      - signalforge-prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+
+  grafana:
+    image: grafana/grafana:13.2.1
+    profiles:
+      - observability
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-signalforge-local}
+    volumes:
+      - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro,Z
+      - signalforge-grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+
 volumes:
   signalforge-postgres-data:
   signalforge-rabbitmq-data:
+  signalforge-tempo-data:
+  signalforge-prometheus-data:
+  signalforge-grafana-data:

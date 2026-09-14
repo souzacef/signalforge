@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: signalforge-api
+    static_configs:
+      - targets:
+          - backend:8000
+
+  - job_name: signalforge-dispatcher
+    static_configs:
+      - targets:
+          - dispatcher:9101
+
+  - job_name: signalforge-incident-consumer
+    static_configs:
+      - targets:
+          - consumer:9102
+
+  - job_name: signalforge-enrichment-worker
+    static_configs:
+      - targets:
+          - enrichment-worker:9103
