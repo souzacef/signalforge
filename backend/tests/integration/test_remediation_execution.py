@@ -17,6 +17,7 @@ from signalforge.remediation.execution import (
 )
 from signalforge.remediation.models import (
     RemediationActionKind,
+    RemediationExecution,
     RemediationProposal,
     RemediationProposalStatus,
 )
@@ -107,18 +108,17 @@ async def test_approved_persisted_proposal_executes_only_via_injected_http_trans
         final_outbox_count = await session.scalar(
             select(func.count()).select_from(OutboxEvent)
         )
-        execution_tables = (
-            await session.execute(
-                text(
-                    "SELECT to_regclass('public.remediation_executions'), "
-                    "to_regclass('public.execution_attempts')"
-                )
-            )
-        ).one()
+        execution_count = await session.scalar(
+            select(func.count()).select_from(RemediationExecution)
+        )
+        attempts_table = await session.scalar(
+            text("SELECT to_regclass('public.execution_attempts')")
+        )
 
     assert proposal_after is not None
     assert proposal_after.status is RemediationProposalStatus.APPROVED
     assert incident_after is not None
     assert incident_after.status is IncidentStatus.OPEN
     assert final_outbox_count == initial_outbox_count
-    assert execution_tables == (None, None)
+    assert execution_count == 0
+    assert attempts_table is None

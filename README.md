@@ -149,6 +149,9 @@ The API exposes:
 - `POST /api/v1/remediation-proposals/{proposal_id}/reject` — rejects or
   withdraws a pending proposal; an `operator` may withdraw their own proposal,
   while an `admin` may reject any proposal.
+- `POST /api/v1/remediation-proposals/{proposal_id}/execute` — durably requests
+  asynchronous execution of an approved proposal; requires an `admin` and returns
+  `202 Accepted` after the execution row and outbox event commit.
 - `GET /api/v1/incidents/{incident_id}/enrichments` — lists persisted advisory
   enrichment snapshots for one Incident; available to all authenticated roles.
 - `GET /api/v1/enrichments` — lists persisted advisory enrichment snapshots
@@ -208,20 +211,30 @@ Role policy is explicit:
 - `operator`: create and read proposals, and withdraw only their own pending
   proposals.
 - `admin`: create and read proposals, approve another user's pending proposal,
-  and reject any pending proposal, including their own.
+  reject any pending proposal including their own, and explicitly request execution
+  of an approved proposal.
 
-Approval only persists the human decision. It does not execute a command, restart
-a service, publish an execution event, or invoke AI.
+Approval only persists the human decision. It does not create an execution
+request, publish an execution event, restart a service, or invoke AI. An admin must
+separately `POST /api/v1/remediation-proposals/{proposal_id}/execute`; the endpoint
+accepts no command body and copies only the approved action and logical target. It
+atomically commits one `requested` execution row and one
+`remediation.execution.requested` v1 outbox event, then returns `202 Accepted`.
 
-Approved proposals can be converted to a small command and passed directly by
-trusted application code to the internal remediation executor. No API endpoint
-invokes that executor yet. For `restart_service`, the executor resolves the
-logical target through an operator-configured allowlist of fixed HTTP(S)
-management endpoints; proposal targets are never interpreted as URLs or
-commands. The HTTP adapter makes one request with a bounded timeout and does not
-follow redirects. Automatic, durable execution is planned for the next phase;
-this contract does not provide exactly-once execution. The allowlist defaults to
-empty and therefore fails closed. Operators can provide it as JSON, for example:
+The existing dispatcher publishes that outbox event asynchronously to the durable
+classic `signalforge.remediation-execution` RabbitMQ queue through the
+`signalforge.events` direct exchange. Phase 5d1 deliberately has no consumer or
+execution worker, so messages remain queued and no actuator call occurs. Phase 5d2
+will define worker and attempt semantics, including external-outcome ambiguity and
+retry classification. This flow makes no exactly-once execution claim.
+
+Trusted application code can still invoke the internal Phase 5c executor directly.
+For `restart_service`, it resolves the logical target through an operator-configured
+allowlist of fixed HTTP(S) management endpoints; proposal targets are never
+interpreted as URLs or commands. The HTTP adapter makes one request with a bounded
+timeout and does not follow redirects. The allowlist stays in runtime configuration
+and is never stored on the execution request or event. It defaults to empty and
+therefore fails closed. Operators can provide it as JSON, for example:
 
 ```env
 SIGNALFORGE_REMEDIATION_RESTART_ENDPOINTS={"checkout-api":"http://checkout-control:8080/internal/restart"}
@@ -239,11 +252,14 @@ scheduling. Each committed claim increments the attempt count, even if its owner
 stops before using it; rolled-back claims do not count. Claim, settlement, and
 release helpers leave commit/rollback to the caller's short database transaction.
 Release preserves the due time, making already-due work immediately eligible.
-RabbitMQ publisher/topology support reconstructs the stored `incident.created` v1
-envelope and sends persistent JSON messages with mandatory routing and publisher
-confirms. In a caller-provisioned vhost (normally `signalforge`), it declares the
-durable direct exchange `signalforge.events`, durable classic queue
-`signalforge.incident-events`, and `incident.created` binding.
+RabbitMQ publisher/topology support reconstructs the supported
+`incident.created`, `triage.enrichment.requested`, and
+`remediation.execution.requested` v1 envelopes and sends persistent JSON messages
+with mandatory routing and publisher confirms. In a caller-provisioned vhost
+(normally `signalforge`), it declares the durable direct exchange
+`signalforge.events` and durable classic queues for Incident events, triage
+enrichment, and remediation execution, each with its matching event-type routing
+key. No remediation execution consumer exists in this phase.
 
 The publisher does not query or settle PostgreSQL state. Its robust connection is
 reused across publications; a timeout or ambiguous transport failure retires the

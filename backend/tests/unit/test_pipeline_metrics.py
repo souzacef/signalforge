@@ -31,6 +31,9 @@ def test_outbox_batch_records_each_real_outcome_with_bounded_labels() -> None:
             uuid4(), DispatchOutcome.RETRY_SCHEDULED, "triage.enrichment.requested"
         ),
         EventDispatchResult(
+            uuid4(), DispatchOutcome.PUBLISHED, "remediation.execution.requested"
+        ),
+        EventDispatchResult(
             uuid4(),
             DispatchOutcome.RETRY_SCHEDULED,
             "incident.created",
@@ -50,10 +53,11 @@ def test_outbox_batch_records_each_real_outcome_with_bounded_labels() -> None:
         ),
         EventDispatchResult(uuid4(), DispatchOutcome.RELEASED, secret),
     )
-    _log_batch(DispatchBatchResult(7, 1, 2, 1, 1, 2, False, events), metrics)
+    _log_batch(DispatchBatchResult(8, 2, 2, 1, 1, 2, False, events), metrics)
     expected = [
         ("incident.created", "published"),
         ("triage.enrichment.requested", "retry_scheduled"),
+        ("remediation.execution.requested", "published"),
         ("incident.created", "invalid"),
         ("incident.created", "ownership_lost"),
         ("incident.created", "ambiguous"),

@@ -25,13 +25,17 @@ from signalforge.outbox import rabbitmq
 from signalforge.outbox.dispatching import ClaimSnapshot
 from signalforge.outbox.rabbitmq import (
     ENRICHMENT_ROUTING_KEY,
+    REMEDIATION_EXECUTION_QUEUE_NAME,
+    REMEDIATION_EXECUTION_ROUTING_KEY,
     PublishFailedError,
     PublishTimeoutError,
     RabbitMQPublisher,
     StoredEventError,
+    declare_topology,
     reconstruct_event,
     thaw_json,
 )
+from signalforge.remediation.events import RemediationExecutionRequested
 from signalforge.triage.events import TriageEnrichmentRequested
 
 
@@ -75,6 +79,22 @@ def enrichment_claim(claim: ClaimSnapshot) -> ClaimSnapshot:
                 "priority": "P2",
                 "requires_human_review": False,
                 "incident_occurred_at": "2026-09-11T15:30:00-03:00",
+            }
+        ),
+    )
+
+
+@pytest.fixture
+def remediation_claim(claim: ClaimSnapshot) -> ClaimSnapshot:
+    return replace(
+        claim,
+        event_type=REMEDIATION_EXECUTION_ROUTING_KEY,
+        aggregate_id=uuid4(),
+        payload=MappingProxyType(
+            {
+                "proposal_id": str(uuid4()),
+                "action_kind": "restart_service",
+                "target": "checkout-api",
             }
         ),
     )
@@ -150,6 +170,95 @@ async def test_publishes_enrichment_with_validated_routing_and_properties(
     assert message.content_encoding == "utf-8"
     assert message.delivery_mode == DeliveryMode.PERSISTENT
     assert json.loads(message.body)["payload"]["priority"] == "P2"
+
+
+def test_reconstructs_typed_remediation_execution_request(
+    remediation_claim: ClaimSnapshot,
+) -> None:
+    event = reconstruct_event(remediation_claim)
+
+    assert isinstance(event, RemediationExecutionRequested)
+    assert event.event_id == remediation_claim.id
+    assert event.aggregate_id == remediation_claim.aggregate_id
+    assert event.event_type == REMEDIATION_EXECUTION_ROUTING_KEY
+    assert str(event.payload.proposal_id) == remediation_claim.payload["proposal_id"]
+    assert event.payload.action_kind.value == "restart_service"
+    assert event.payload.target == "checkout-api"
+
+
+@pytest.mark.anyio
+async def test_publishes_remediation_request_as_persistent_message(
+    remediation_claim: ClaimSnapshot,
+    publisher: RabbitMQPublisher,
+) -> None:
+    await publisher.publish(remediation_claim, timeout=1)
+
+    message = publisher._exchange.publish.call_args.args[0]
+    assert publisher._exchange.publish.call_args.kwargs == {
+        "routing_key": REMEDIATION_EXECUTION_ROUTING_KEY,
+        "mandatory": True,
+        "timeout": 1,
+    }
+    assert message.message_id == str(remediation_claim.id)
+    assert message.type == REMEDIATION_EXECUTION_ROUTING_KEY
+    assert message.delivery_mode == DeliveryMode.PERSISTENT
+    assert json.loads(message.body)["aggregate_id"] == str(
+        remediation_claim.aggregate_id
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"event_version": 2},
+        {"payload": MappingProxyType({})},
+        {
+            "payload": MappingProxyType(
+                {
+                    "proposal_id": str(uuid4()),
+                    "action_kind": "restart_service",
+                    "target": "bad target",
+                }
+            )
+        },
+    ],
+)
+async def test_invalid_remediation_request_never_reaches_broker(
+    remediation_claim: ClaimSnapshot,
+    publisher: RabbitMQPublisher,
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises(StoredEventError):
+        await publisher.publish(replace(remediation_claim, **changes), timeout=1)
+    publisher._channel.ready.assert_not_awaited()
+    publisher._exchange.publish.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_topology_declares_durable_classic_remediation_queue() -> None:
+    exchange = Mock(spec=AbstractExchange)
+    queues = [Mock(), Mock(), Mock()]
+    for queue in queues:
+        queue.bind = AsyncMock()
+    channel = Mock()
+    channel.declare_exchange = AsyncMock(return_value=exchange)
+    channel.declare_queue = AsyncMock(side_effect=queues)
+
+    assert await declare_topology(channel, timeout=1) is exchange
+
+    remediation_call = channel.declare_queue.await_args_list[2]
+    assert remediation_call.args == (REMEDIATION_EXECUTION_QUEUE_NAME,)
+    assert remediation_call.kwargs == {
+        "durable": True,
+        "exclusive": False,
+        "auto_delete": False,
+        "arguments": {"x-queue-type": "classic"},
+        "timeout": 1,
+    }
+    queues[2].bind.assert_awaited_once_with(
+        exchange, routing_key=REMEDIATION_EXECUTION_ROUTING_KEY, timeout=1
+    )
 
 
 def test_nested_frozen_payload_is_thawed_without_mutating_claim(
