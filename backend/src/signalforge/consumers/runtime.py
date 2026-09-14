@@ -44,6 +44,10 @@ from signalforge.observability.logging import (
     configure_logging,
     delivery_log_context,
 )
+from signalforge.observability.metrics import (
+    IncidentConsumerMetrics,
+    MessageMetricResult,
+)
 from signalforge.outbox.dispatching import retry_delay
 from signalforge.outbox.rabbitmq import QUEUE_NAME, declare_topology
 
@@ -308,7 +312,9 @@ async def _consume_connected(
     settings: ConsumerSettings,
     stop_event: asyncio.Event,
     jitter_source: Callable[[], float],
+    metrics: IncidentConsumerMetrics | None = None,
 ) -> _ConsumeOutcome:
+    pipeline_metrics = metrics or IncidentConsumerMetrics()
     database_failures = 0
     async with broker.queue.iterator() as iterator:
         while not stop_event.is_set():
@@ -329,6 +335,7 @@ async def _consume_connected(
                 )
             except InvalidEventError as error:
                 database_failures = 0
+                pipeline_metrics.record(MessageMetricResult.REJECTED)
                 logger.warning(
                     "consumer rejected invalid event",
                     extra={
@@ -340,6 +347,7 @@ async def _consume_connected(
                 continue
             except SQLAlchemyError:
                 database_failures += 1
+                pipeline_metrics.record(MessageMetricResult.REQUEUED)
                 delay = _backoff_seconds(
                     database_failures,
                     settings,
@@ -360,7 +368,14 @@ async def _consume_connected(
             except _BROKER_ERRORS:
                 return _ConsumeOutcome.BROKER_UNAVAILABLE
 
-            if result is None or stopping:
+            if result is None:
+                return _ConsumeOutcome.STOPPED
+            pipeline_metrics.record(
+                MessageMetricResult.PROCESSED
+                if result is ProcessingResult.PROCESSED
+                else MessageMetricResult.DUPLICATE
+            )
+            if stopping:
                 return _ConsumeOutcome.STOPPED
             database_failures = 0
 
@@ -412,9 +427,11 @@ async def run_consumer(
     *,
     stop_event: asyncio.Event | None = None,
     jitter_source: Callable[[], float] = random,
+    metrics: IncidentConsumerMetrics | None = None,
 ) -> None:
     """Consume sequentially until stopped, owning all DB/broker resources."""
     stop = stop_event or asyncio.Event()
+    pipeline_metrics = metrics or IncidentConsumerMetrics()
     engine = _create_database_engine(settings)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     broker: ConsumerBroker | None = None
@@ -457,6 +474,7 @@ async def run_consumer(
                     settings,
                     stop,
                     jitter_source,
+                    pipeline_metrics,
                 )
             except _BROKER_ERRORS:
                 outcome = _ConsumeOutcome.BROKER_UNAVAILABLE

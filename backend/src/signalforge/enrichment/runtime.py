@@ -50,6 +50,11 @@ from signalforge.observability.logging import (
     configure_logging,
     delivery_log_context,
 )
+from signalforge.observability.metrics import (
+    EnrichmentMetrics,
+    MessageMetricResult,
+    ProviderMetrics,
+)
 from signalforge.outbox.dispatching import retry_delay
 from signalforge.outbox.rabbitmq import ENRICHMENT_QUEUE_NAME, declare_topology
 
@@ -346,7 +351,9 @@ async def _consume_connected(
     settings: EnrichmentWorkerSettings,
     stop_event: asyncio.Event,
     jitter_source: Callable[[], float],
+    metrics: EnrichmentMetrics | None = None,
 ) -> _ConsumeOutcome:
+    pipeline_metrics = metrics or EnrichmentMetrics()
     processing_failures = 0
     async with broker.queue.iterator() as iterator:
         while not stop_event.is_set():
@@ -368,6 +375,7 @@ async def _consume_connected(
                 )
             except InvalidEnrichmentEventError as error:
                 processing_failures = 0
+                pipeline_metrics.record(MessageMetricResult.REJECTED)
                 logger.warning(
                     "enrichment worker rejected invalid event",
                     extra={
@@ -381,6 +389,7 @@ async def _consume_connected(
                 continue
             except PermanentEnrichmentError as error:
                 processing_failures = 0
+                pipeline_metrics.record(MessageMetricResult.REJECTED)
                 logger.warning(
                     "enrichment worker handled terminal provider failure",
                     extra={
@@ -394,6 +403,7 @@ async def _consume_connected(
                 continue
             except TransientEnrichmentError as error:
                 processing_failures += 1
+                pipeline_metrics.record(MessageMetricResult.REQUEUED)
                 delay = _backoff_seconds(
                     processing_failures,
                     base_delay=settings.processing_retry_base,
@@ -415,6 +425,7 @@ async def _consume_connected(
                 continue
             except SQLAlchemyError:
                 processing_failures += 1
+                pipeline_metrics.record(MessageMetricResult.REQUEUED)
                 delay = _backoff_seconds(
                     processing_failures,
                     base_delay=settings.processing_retry_base,
@@ -436,7 +447,14 @@ async def _consume_connected(
             except _BROKER_ERRORS:
                 return _ConsumeOutcome.BROKER_UNAVAILABLE
 
-            if result is None or stopping:
+            if result is None:
+                return _ConsumeOutcome.STOPPED
+            pipeline_metrics.record(
+                MessageMetricResult.PROCESSED
+                if result is EnrichmentProcessingResult.PROCESSED
+                else MessageMetricResult.DUPLICATE
+            )
+            if stopping:
                 return _ConsumeOutcome.STOPPED
             processing_failures = 0
 
@@ -491,9 +509,11 @@ async def run_worker(
     *,
     stop_event: asyncio.Event | None = None,
     jitter_source: Callable[[], float] = random,
+    metrics: EnrichmentMetrics | None = None,
 ) -> None:
     """Consume sequentially until stopped, owning all DB/broker resources."""
     stop = stop_event or asyncio.Event()
+    pipeline_metrics = metrics or EnrichmentMetrics()
     engine = _create_database_engine(settings)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     broker: EnrichmentBroker | None = None
@@ -541,6 +561,7 @@ async def run_worker(
                     settings,
                     stop,
                     jitter_source,
+                    pipeline_metrics,
                 )
             except _BROKER_ERRORS:
                 outcome = _ConsumeOutcome.BROKER_UNAVAILABLE
@@ -592,12 +613,16 @@ async def run_worker(
 async def async_main() -> None:
     settings = EnrichmentWorkerSettings()  # type: ignore[call-arg]
     enrichment_settings = EnrichmentSettings()  # type: ignore[call-arg]
-    provider = GeminiEnrichmentProvider(enrichment_settings)
+    pipeline_metrics = EnrichmentMetrics()
+    provider_metrics = ProviderMetrics(pipeline_metrics.registry)
+    provider = GeminiEnrichmentProvider(enrichment_settings, metrics=provider_metrics)
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     installed = install_signal_handlers(loop, stop_event)
     try:
-        await run_worker(settings, provider, stop_event=stop_event)
+        await run_worker(
+            settings, provider, stop_event=stop_event, metrics=pipeline_metrics
+        )
     finally:
         remove_signal_handlers(loop, installed)
 

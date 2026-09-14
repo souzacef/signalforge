@@ -21,6 +21,10 @@ from sqlalchemy.ext.asyncio import (
 
 from signalforge.core.config import DatabaseSettings
 from signalforge.observability.logging import configure_logging
+from signalforge.observability.metrics import (
+    OutboxDispatchMetricResult,
+    OutboxMetrics,
+)
 from signalforge.outbox.dispatching import retry_delay
 from signalforge.outbox.orchestrator import (
     DispatchBatchResult,
@@ -261,7 +265,29 @@ def remove_signal_handlers(
         loop.remove_signal_handler(process_signal)
 
 
-def _log_batch(result: DispatchBatchResult) -> None:
+def _dispatch_metric_result(
+    outcome: DispatchOutcome, *, error_code: object, publication_confirmed: bool
+) -> OutboxDispatchMetricResult:
+    if outcome is DispatchOutcome.PUBLISHED:
+        return OutboxDispatchMetricResult.PUBLISHED
+    if outcome is DispatchOutcome.RETRY_SCHEDULED:
+        return (
+            OutboxDispatchMetricResult.INVALID
+            if error_code == "invalid_event"
+            else OutboxDispatchMetricResult.RETRY_SCHEDULED
+        )
+    if outcome is DispatchOutcome.OWNERSHIP_LOST:
+        return OutboxDispatchMetricResult.OWNERSHIP_LOST
+    if outcome is DispatchOutcome.RELEASED:
+        return OutboxDispatchMetricResult.RELEASED
+    return (
+        OutboxDispatchMetricResult.AMBIGUOUS
+        if publication_confirmed
+        else OutboxDispatchMetricResult.DATABASE_FAILED
+    )
+
+
+def _log_batch(result: DispatchBatchResult, metrics: OutboxMetrics) -> None:
     logger.info(
         "dispatcher batch completed",
         extra={
@@ -276,6 +302,14 @@ def _log_batch(result: DispatchBatchResult) -> None:
         },
     )
     for event_result in result.events:
+        metrics.record(
+            event_type=event_result.event_type,
+            result=_dispatch_metric_result(
+                event_result.outcome,
+                error_code=event_result.error_code,
+                publication_confirmed=event_result.publication_confirmed,
+            ),
+        )
         event_name = {
             DispatchOutcome.PUBLISHED: "outbox_event_published",
             DispatchOutcome.RETRY_SCHEDULED: (
@@ -316,9 +350,11 @@ async def run_dispatcher(
     *,
     stop_event: asyncio.Event | None = None,
     jitter_source: Callable[[], float] = random,
+    metrics: OutboxMetrics | None = None,
 ) -> None:
     """Run batches until stopped, owning and cleaning up DB/broker resources."""
     stop = stop_event or asyncio.Event()
+    pipeline_metrics = metrics or OutboxMetrics()
     engine = _create_database_engine(settings)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     publisher: RabbitMQPublisher | None = None
@@ -384,7 +420,7 @@ async def run_dispatcher(
 
             if result is None:
                 break
-            _log_batch(result)
+            _log_batch(result, pipeline_metrics)
             if stopping:
                 break
 

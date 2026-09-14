@@ -7,6 +7,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from google.genai import errors, types
+from prometheus_client import generate_latest
 
 from signalforge.core.config import EnrichmentSettings
 from signalforge.enrichment import gemini
@@ -192,3 +193,62 @@ async def test_unusable_structured_response_is_retriable(
         await provider.enrich(enrichment_input())
 
     assert caught.value.reason is ProviderFailureReason.INVALID_RESPONSE
+
+
+def provider_samples(provider: GeminiEnrichmentProvider) -> dict[str, float]:
+    return {
+        sample.labels["result"]: sample.value
+        for sample in provider._metrics.calls.collect()[0].samples
+        if sample.name.endswith("_total")
+    }
+
+
+@pytest.mark.parametrize(
+    ("models", "expected", "error_type"),
+    [
+        (FakeModels(parsed=valid_result().model_dump(mode="json")), "success", None),
+        (
+            FakeModels(error=httpx.ConnectError("private transport text")),
+            "transient_failure",
+            TransientEnrichmentError,
+        ),
+        (
+            FakeModels(error=errors.APIError(400, {"message": "private API text"})),
+            "permanent_failure",
+            PermanentEnrichmentError,
+        ),
+        (
+            FakeModels(parsed={"summary": "private malformed response"}),
+            "invalid_response",
+            TransientEnrichmentError,
+        ),
+    ],
+)
+async def test_provider_metrics_record_one_classified_call_and_duration(
+    models: FakeModels,
+    expected: str,
+    error_type: type[Exception] | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, _ = build_provider(monkeypatch, models)
+    if error_type is None:
+        await provider.enrich(enrichment_input())
+    else:
+        with pytest.raises(error_type):
+            await provider.enrich(enrichment_input())
+
+    assert provider_samples(provider) == {expected: 1}
+    labels = {
+        "provider": "gemini",
+        "model": "gemini-test-flash",
+        "result": expected,
+    }
+    assert (
+        provider._metrics.registry.get_sample_value(
+            "signalforge_enrichment_provider_duration_seconds_count", labels
+        )
+        == 1
+    )
+    exposition = generate_latest(provider._metrics.registry).decode()
+    assert "test-api-key-must-remain-private" not in exposition
+    assert "private" not in exposition

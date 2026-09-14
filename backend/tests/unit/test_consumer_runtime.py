@@ -22,6 +22,7 @@ from signalforge.consumers.runtime import (
     ConsumerSettings,
     run_consumer,
 )
+from signalforge.observability.metrics import IncidentConsumerMetrics
 
 pytestmark = pytest.mark.anyio
 
@@ -335,6 +336,7 @@ async def test_processed_duplicate_and_invalid_deliveries_continue_sequentially(
     iterator = FakeIterator(cast(list[object], messages))
     broker = cast(ConsumerBroker, FakeBroker(iterator))
     stop = asyncio.Event()
+    metrics = IncidentConsumerMetrics()
     active = 0
     maximum_active = 0
     outcomes: list[bytes] = []
@@ -363,11 +365,28 @@ async def test_processed_duplicate_and_invalid_deliveries_continue_sequentially(
         settings(),
         stop,
         lambda: 0,
+        metrics,
     )
 
     assert result is runtime._ConsumeOutcome.STOPPED
     assert outcomes == [b"0", b"1", b"2", b"3"]
     assert maximum_active == 1
+    for metric_result, count in (("processed", 2), ("duplicate", 1), ("rejected", 1)):
+        assert (
+            metrics.registry.get_sample_value(
+                "signalforge_incident_consumer_messages_total",
+                {"result": metric_result},
+            )
+            == count
+        )
+    assert (
+        sum(
+            sample.value
+            for sample in metrics.messages.collect()[0].samples
+            if sample.name.endswith("_total")
+        )
+        == 4
+    )
 
 
 async def test_database_failure_requeues_then_backs_off_and_continues(
@@ -378,6 +397,7 @@ async def test_database_failure_requeues_then_backs_off_and_continues(
         ConsumerBroker, FakeBroker(FakeIterator(cast(list[object], messages)))
     )
     stop = asyncio.Event()
+    metrics = IncidentConsumerMetrics()
     calls = 0
     delays: list[float] = []
 
@@ -401,11 +421,24 @@ async def test_database_failure_requeues_then_backs_off_and_continues(
         settings(),
         stop,
         lambda: 0,
+        metrics,
     )
 
     assert result is runtime._ConsumeOutcome.STOPPED
     assert calls == 2
     assert delays == [0.5]
+    assert (
+        metrics.registry.get_sample_value(
+            "signalforge_incident_consumer_messages_total", {"result": "requeued"}
+        )
+        == 1
+    )
+    assert (
+        metrics.registry.get_sample_value(
+            "signalforge_incident_consumer_messages_total", {"result": "processed"}
+        )
+        == 1
+    )
 
 
 async def test_oserror_retires_broken_broker_and_reconnects(

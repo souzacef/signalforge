@@ -1,5 +1,7 @@
 """Official Google GenAI adapter for one schema-constrained enrichment call."""
 
+from time import monotonic
+
 import httpx
 from google import genai
 from google.genai import errors, types
@@ -12,6 +14,7 @@ from signalforge.enrichment.provider import (
     ProviderFailureReason,
     TransientEnrichmentError,
 )
+from signalforge.observability.metrics import ProviderMetricResult, ProviderMetrics
 
 PROVIDER_NAME = "gemini"
 SYSTEM_INSTRUCTION = """Analyze only the supplied incident snapshot and return advisory enrichment.
@@ -25,8 +28,11 @@ certainty. Return only the required structured result. Do not propose autonomous
 class GeminiEnrichmentProvider:
     """Encapsulate the Google SDK and expose only SignalForge domain types."""
 
-    def __init__(self, settings: EnrichmentSettings) -> None:
+    def __init__(
+        self, settings: EnrichmentSettings, metrics: ProviderMetrics | None = None
+    ) -> None:
         self._model = settings.gemini_model
+        self._metrics = metrics if metrics is not None else ProviderMetrics()
         self._client = genai.Client(api_key=settings.gemini_api_key.get_secret_value())
 
     @property
@@ -38,38 +44,58 @@ class GeminiEnrichmentProvider:
         return self._model
 
     async def enrich(self, input: EnrichmentInput) -> EnrichmentResult:
+        started = monotonic()
+        outcome: ProviderMetricResult | None = None
         try:
-            response = await self._client.aio.models.generate_content(
-                model=self._model,
-                contents=input.model_dump_json(),
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.1,
-                    response_mime_type="application/json",
-                    response_schema=EnrichmentResult,
-                ),
-            )
-        except errors.UnknownApiResponseError:
-            raise TransientEnrichmentError(
-                ProviderFailureReason.INVALID_RESPONSE
-            ) from None
-        except errors.APIError as error:
-            if error.code in {408, 429} or error.code >= 500:
-                reason = (
-                    ProviderFailureReason.RATE_LIMITED
-                    if error.code == 429
-                    else ProviderFailureReason.UNAVAILABLE
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=self._model,
+                    contents=input.model_dump_json(),
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_INSTRUCTION,
+                        temperature=0.1,
+                        response_mime_type="application/json",
+                        response_schema=EnrichmentResult,
+                    ),
                 )
-                raise TransientEnrichmentError(reason) from None
-            raise PermanentEnrichmentError(
-                ProviderFailureReason.REQUEST_REJECTED
-            ) from None
-        except (httpx.TransportError, OSError):
-            raise TransientEnrichmentError(ProviderFailureReason.UNAVAILABLE) from None
+            except errors.UnknownApiResponseError:
+                outcome = ProviderMetricResult.INVALID_RESPONSE
+                raise TransientEnrichmentError(
+                    ProviderFailureReason.INVALID_RESPONSE
+                ) from None
+            except errors.APIError as error:
+                if error.code in {408, 429} or error.code >= 500:
+                    outcome = ProviderMetricResult.TRANSIENT_FAILURE
+                    reason = (
+                        ProviderFailureReason.RATE_LIMITED
+                        if error.code == 429
+                        else ProviderFailureReason.UNAVAILABLE
+                    )
+                    raise TransientEnrichmentError(reason) from None
+                outcome = ProviderMetricResult.PERMANENT_FAILURE
+                raise PermanentEnrichmentError(
+                    ProviderFailureReason.REQUEST_REJECTED
+                ) from None
+            except (httpx.TransportError, OSError):
+                outcome = ProviderMetricResult.TRANSIENT_FAILURE
+                raise TransientEnrichmentError(
+                    ProviderFailureReason.UNAVAILABLE
+                ) from None
 
-        try:
-            return EnrichmentResult.model_validate(response.parsed)
-        except ValidationError:
-            raise TransientEnrichmentError(
-                ProviderFailureReason.INVALID_RESPONSE
-            ) from None
+            try:
+                result = EnrichmentResult.model_validate(response.parsed)
+            except ValidationError:
+                outcome = ProviderMetricResult.INVALID_RESPONSE
+                raise TransientEnrichmentError(
+                    ProviderFailureReason.INVALID_RESPONSE
+                ) from None
+            outcome = ProviderMetricResult.SUCCESS
+            return result
+        finally:
+            if outcome is not None:
+                self._metrics.record(
+                    provider=PROVIDER_NAME,
+                    model=self._model,
+                    result=outcome,
+                    duration=monotonic() - started,
+                )
