@@ -11,8 +11,8 @@ development straightforward while domain boundaries are still emerging, without
 preventing modules from being separated later when real operational needs justify
 it.
 
-RAG, metrics, distributed tracing, observability dashboards, Angular, Kubernetes,
-Helm, Terraform, and AWS are planned directions. They are not implemented in
+RAG, worker and business metrics, distributed tracing, observability dashboards,
+Angular, Kubernetes, Helm, Terraform, and AWS are planned directions. They are not implemented in
 this phase.
 
 ## Prerequisites
@@ -124,6 +124,8 @@ infrastructure.
 
 The API exposes:
 
+- `GET /metrics` — exposes in-process Prometheus-format HTTP metrics for
+  operational scraping without authentication or external dependencies.
 - `GET /health/live` — process liveness only; it never checks PostgreSQL.
 - `GET /health/ready` — returns `200` when PostgreSQL answers a minimal query,
   otherwise `503` without exposing connection details.
@@ -373,9 +375,26 @@ is task-local and reset after every request or delivery.
 
 Authorization values, credentials, connection URLs, request and message bodies,
 Gemini prompts and responses, and raw known exception strings are intentionally
-omitted. Metrics, distributed tracing, and a local dashboard or log aggregation
-stack remain future Phase 4 work; this logging slice does not make telemetry an API
+omitted. Worker and business metrics, distributed tracing, and a local dashboard
+or log aggregation stack remain future Phase 4 work; telemetry is not an API
 readiness dependency.
+
+## HTTP metrics
+
+`GET /metrics` exposes the application-owned Prometheus registry using the
+official exposition content type. It currently contains only total HTTP requests,
+labeled by method, route template, and status code, plus HTTP request-duration
+histograms labeled by method and route template. Request, Incident, event, user,
+and query values are never metric labels; unmatched requests share one fixed
+`__unmatched__` label. Scrapes of `/metrics` are excluded from these traffic
+metrics.
+
+Metrics are maintained in process and are not persisted. Collection requires no
+PostgreSQL, RabbitMQ, or Gemini access. The endpoint is unauthenticated for
+operational scraping, so production exposure must be restricted by future
+deployment infrastructure. No Prometheus or Grafana service is deployed yet;
+worker and business metrics belong to Phase 4b2, and distributed tracing remains
+future Phase 4c work.
 
 ## Local authentication
 
