@@ -3,11 +3,13 @@ import logging
 import signal
 from collections.abc import Callable
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
+from signalforge.observability.tracing import TracingRuntime
 from signalforge.outbox import dispatcher
 from signalforge.outbox.dispatcher import (
     DispatcherSettings,
@@ -593,3 +595,18 @@ def test_unsupported_signal_handlers_degrade_without_crashing() -> None:
     loop = FakeLoop(supported=False)
     installed = install_signal_handlers(cast(Any, loop), asyncio.Event())
     assert installed == ()
+
+
+async def test_dispatcher_shuts_explicit_tracing_runtime_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, _ = install_resources(monkeypatch)
+    tracing = TracingRuntime()
+    shutdown = Mock(wraps=tracing.shutdown)
+    monkeypatch.setattr(tracing, "shutdown", shutdown)
+    stop = asyncio.Event()
+    stop.set()
+
+    await run_dispatcher(settings(), stop_event=stop, tracing=tracing)
+    shutdown.assert_called_once_with()
+    assert engine.dispose_calls == 1

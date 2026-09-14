@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections import deque
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 from aio_pika import IncomingMessage
@@ -24,6 +25,7 @@ from signalforge.consumers.runtime import (
 )
 from signalforge.db.errors import DatabaseTransportError
 from signalforge.observability.metrics import IncidentConsumerMetrics
+from signalforge.observability.tracing import TracingRuntime
 
 pytestmark = pytest.mark.anyio
 
@@ -790,3 +792,18 @@ async def test_invalid_event_log_does_not_expose_body_or_exception_text(
         )
 
     assert secret not in caplog.text
+
+
+async def test_consumer_shuts_explicit_tracing_runtime_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, _ = install_resources(monkeypatch)
+    tracing = TracingRuntime()
+    shutdown = Mock(wraps=tracing.shutdown)
+    monkeypatch.setattr(tracing, "shutdown", shutdown)
+    stop = asyncio.Event()
+    stop.set()
+
+    await run_consumer(settings(), stop_event=stop, tracing=tracing)
+    shutdown.assert_called_once_with()
+    assert engine.dispose_calls == 1

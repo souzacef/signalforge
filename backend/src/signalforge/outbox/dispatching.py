@@ -49,6 +49,8 @@ class ClaimSnapshot:
     payload: Mapping[str, FrozenJSON]
     occurred_at: datetime
     created_at: datetime
+    traceparent: str | None = None
+    tracestate: str | None = None
 
 
 class DispatchErrorCode(StrEnum):
@@ -125,6 +127,8 @@ async def claim_pending(
                 ),
                 occurred_at=row.occurred_at,
                 created_at=row.created_at,
+                traceparent=row.traceparent,
+                tracestate=row.tracestate,
             )
         )
     await session.flush()

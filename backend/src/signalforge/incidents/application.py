@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from signalforge.incidents import service
 from signalforge.incidents.events import IncidentCreated, IncidentCreatedPayload
 from signalforge.incidents.schemas import IncidentCreate, IncidentResponse
+from signalforge.observability.propagation import capture_current_trace_context
 from signalforge.outbox.models import OutboxEvent
 
 
@@ -26,6 +27,7 @@ async def create_incident_with_event(
             incident_occurred_at=incident.occurred_at,
         ),
     )
+    trace_context = capture_current_trace_context()
     session.add(
         OutboxEvent(
             id=event.event_id,
@@ -34,6 +36,8 @@ async def create_incident_with_event(
             aggregate_id=event.aggregate_id,
             payload=event.payload.model_dump(mode="json"),
             occurred_at=event.occurred_at,
+            traceparent=trace_context.traceparent,
+            tracestate=trace_context.tracestate,
         )
     )
     await session.flush()

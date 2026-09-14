@@ -18,7 +18,11 @@ from signalforge.enrichment.router import router as enrichment_router
 from signalforge.incidents.router import router as incidents_router
 from signalforge.observability.logging import bind_log_context, configure_logging
 from signalforge.observability.metrics import UNMATCHED_ROUTE, HttpMetrics
-from signalforge.observability.tracing import TracingRuntime, create_tracing_runtime
+from signalforge.observability.tracing import (
+    API_SERVICE_NAME,
+    TracingRuntime,
+    create_tracing_runtime,
+)
 from signalforge.triage.router import router as triage_router
 
 logger = logging.getLogger(__name__)
@@ -52,7 +56,9 @@ def create_app(
     """Create and configure the SignalForge API application."""
     configure_logging("signalforge-api")
     settings = get_settings()
-    tracing_runtime = tracing or create_tracing_runtime(get_tracing_settings())
+    tracing_runtime = tracing or create_tracing_runtime(
+        get_tracing_settings(), service_name=API_SERVICE_NAME
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
