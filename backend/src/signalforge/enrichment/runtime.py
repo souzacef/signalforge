@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import (
 from yarl import URL
 
 from signalforge.core.config import DatabaseSettings, EnrichmentSettings
+from signalforge.db.errors import DatabaseTransportError
 from signalforge.enrichment.consumer import (
     CONSUMER_NAME,
     EnrichmentProcessingResult,
@@ -216,6 +217,18 @@ async def _wait_for_stop(stop_event: asyncio.Event, delay: float) -> bool:
     return True
 
 
+async def _database_available(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> bool:
+    """Check whether the DB pool can provide a connection without consuming work."""
+    try:
+        async with session_factory() as session:
+            await session.connection()
+    except (SQLAlchemyError, OSError):
+        return False
+    return True
+
+
 async def _cancel_and_await(task: asyncio.Task[object]) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
@@ -355,110 +368,136 @@ async def _consume_connected(
 ) -> _ConsumeOutcome:
     pipeline_metrics = metrics or EnrichmentMetrics()
     processing_failures = 0
-    async with broker.queue.iterator() as iterator:
-        while not stop_event.is_set():
-            try:
-                message = await _next_or_stop(iterator, stop_event)
-            except StopAsyncIteration:
-                return _ConsumeOutcome.BROKER_UNAVAILABLE
-            if message is None:
-                return _ConsumeOutcome.STOPPED
+    while not stop_event.is_set():
+        database_retry_delay: float | None = None
+        async with broker.queue.iterator() as iterator:
+            while not stop_event.is_set():
+                try:
+                    message = await _next_or_stop(iterator, stop_event)
+                except StopAsyncIteration:
+                    return _ConsumeOutcome.BROKER_UNAVAILABLE
+                if message is None:
+                    return _ConsumeOutcome.STOPPED
 
-            message_context = delivery_log_context(message, consumer_name=CONSUMER_NAME)
-            try:
-                result, stopping = await _run_handler_or_drain(
-                    message,
-                    provider,
-                    session_factory,
-                    settings,
-                    stop_event,
+                message_context = delivery_log_context(
+                    message, consumer_name=CONSUMER_NAME
                 )
-            except InvalidEnrichmentEventError as error:
-                processing_failures = 0
-                pipeline_metrics.record(MessageMetricResult.REJECTED)
-                logger.warning(
-                    "enrichment worker rejected invalid event",
-                    extra={
-                        **message_context,
-                        "event": "message_rejected",
-                        "reason": error.reason,
-                    },
-                )
-                if stop_event.is_set():
-                    return _ConsumeOutcome.STOPPED
-                continue
-            except PermanentEnrichmentError as error:
-                processing_failures = 0
-                pipeline_metrics.record(MessageMetricResult.REJECTED)
-                logger.warning(
-                    "enrichment worker handled terminal provider failure",
-                    extra={
-                        **message_context,
-                        "event": "provider_permanent_failure",
-                        "reason": error.reason,
-                    },
-                )
-                if stop_event.is_set():
-                    return _ConsumeOutcome.STOPPED
-                continue
-            except TransientEnrichmentError as error:
-                processing_failures += 1
-                pipeline_metrics.record(MessageMetricResult.REQUEUED)
-                delay = _backoff_seconds(
-                    processing_failures,
-                    base_delay=settings.processing_retry_base,
-                    max_delay=settings.processing_retry_max,
-                    jitter_source=jitter_source,
-                )
-                logger.warning(
-                    "enrichment provider unavailable; retry scheduled",
-                    extra={
-                        **message_context,
-                        "event": "provider_transient_failure",
-                        "reason": error.reason,
-                        "attempt": processing_failures,
-                        "delay_seconds": delay,
-                    },
-                )
-                if await _wait_for_stop(stop_event, delay):
-                    return _ConsumeOutcome.STOPPED
-                continue
-            except SQLAlchemyError:
-                processing_failures += 1
-                pipeline_metrics.record(MessageMetricResult.REQUEUED)
-                delay = _backoff_seconds(
-                    processing_failures,
-                    base_delay=settings.processing_retry_base,
-                    max_delay=settings.processing_retry_max,
-                    jitter_source=jitter_source,
-                )
-                logger.warning(
-                    "enrichment database unavailable; retry scheduled",
-                    extra={
-                        **message_context,
-                        "event": "message_requeued",
-                        "attempt": processing_failures,
-                        "delay_seconds": delay,
-                    },
-                )
-                if await _wait_for_stop(stop_event, delay):
-                    return _ConsumeOutcome.STOPPED
-                continue
-            except _BROKER_ERRORS:
-                return _ConsumeOutcome.BROKER_UNAVAILABLE
+                try:
+                    result, stopping = await _run_handler_or_drain(
+                        message,
+                        provider,
+                        session_factory,
+                        settings,
+                        stop_event,
+                    )
+                except InvalidEnrichmentEventError as error:
+                    processing_failures = 0
+                    pipeline_metrics.record(MessageMetricResult.REJECTED)
+                    logger.warning(
+                        "enrichment worker rejected invalid event",
+                        extra={
+                            **message_context,
+                            "event": "message_rejected",
+                            "reason": error.reason,
+                        },
+                    )
+                    if stop_event.is_set():
+                        return _ConsumeOutcome.STOPPED
+                    continue
+                except PermanentEnrichmentError as error:
+                    processing_failures = 0
+                    pipeline_metrics.record(MessageMetricResult.REJECTED)
+                    logger.warning(
+                        "enrichment worker handled terminal provider failure",
+                        extra={
+                            **message_context,
+                            "event": "provider_permanent_failure",
+                            "reason": error.reason,
+                        },
+                    )
+                    if stop_event.is_set():
+                        return _ConsumeOutcome.STOPPED
+                    continue
+                except TransientEnrichmentError as error:
+                    processing_failures += 1
+                    pipeline_metrics.record(MessageMetricResult.REQUEUED)
+                    delay = _backoff_seconds(
+                        processing_failures,
+                        base_delay=settings.processing_retry_base,
+                        max_delay=settings.processing_retry_max,
+                        jitter_source=jitter_source,
+                    )
+                    logger.warning(
+                        "enrichment provider unavailable; retry scheduled",
+                        extra={
+                            **message_context,
+                            "event": "provider_transient_failure",
+                            "reason": error.reason,
+                            "attempt": processing_failures,
+                            "delay_seconds": delay,
+                        },
+                    )
+                    if await _wait_for_stop(stop_event, delay):
+                        return _ConsumeOutcome.STOPPED
+                    continue
+                except (SQLAlchemyError, DatabaseTransportError):
+                    processing_failures += 1
+                    pipeline_metrics.record(MessageMetricResult.REQUEUED)
+                    database_retry_delay = _backoff_seconds(
+                        processing_failures,
+                        base_delay=settings.processing_retry_base,
+                        max_delay=settings.processing_retry_max,
+                        jitter_source=jitter_source,
+                    )
+                    logger.warning(
+                        "enrichment database unavailable; retry scheduled",
+                        extra={
+                            **message_context,
+                            "event": "message_requeued",
+                            "attempt": processing_failures,
+                            "delay_seconds": database_retry_delay,
+                        },
+                    )
+                    break
+                except _BROKER_ERRORS:
+                    return _ConsumeOutcome.BROKER_UNAVAILABLE
 
-            if result is None:
-                return _ConsumeOutcome.STOPPED
-            pipeline_metrics.record(
-                MessageMetricResult.PROCESSED
-                if result is EnrichmentProcessingResult.PROCESSED
-                else MessageMetricResult.DUPLICATE
+                if result is None:
+                    return _ConsumeOutcome.STOPPED
+                pipeline_metrics.record(
+                    MessageMetricResult.PROCESSED
+                    if result is EnrichmentProcessingResult.PROCESSED
+                    else MessageMetricResult.DUPLICATE
+                )
+                if stopping:
+                    return _ConsumeOutcome.STOPPED
+                processing_failures = 0
+
+        if database_retry_delay is None:
+            return _ConsumeOutcome.STOPPED
+        if await _wait_for_stop(stop_event, database_retry_delay):
+            return _ConsumeOutcome.STOPPED
+        while not await _database_available(session_factory):
+            processing_failures += 1
+            database_retry_delay = _backoff_seconds(
+                processing_failures,
+                base_delay=settings.processing_retry_base,
+                max_delay=settings.processing_retry_max,
+                jitter_source=jitter_source,
             )
-            if stopping:
+            logger.warning(
+                "enrichment database unavailable; retry scheduled",
+                extra={
+                    **message_context,
+                    "event": "message_requeued",
+                    "attempt": processing_failures,
+                    "delay_seconds": database_retry_delay,
+                },
+            )
+            if await _wait_for_stop(stop_event, database_retry_delay):
                 return _ConsumeOutcome.STOPPED
-            processing_failures = 0
 
-    return _ConsumeOutcome.BROKER_UNAVAILABLE
+    return _ConsumeOutcome.STOPPED
 
 
 def request_shutdown(stop_event: asyncio.Event, signal_name: str) -> None:

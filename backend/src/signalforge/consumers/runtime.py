@@ -39,6 +39,7 @@ from signalforge.consumers.incident_created import (
     handle_message,
 )
 from signalforge.core.config import DatabaseSettings
+from signalforge.db.errors import DatabaseTransportError
 from signalforge.observability.logging import (
     bind_log_context,
     configure_logging,
@@ -185,6 +186,18 @@ async def _wait_for_stop(stop_event: asyncio.Event, delay: float) -> bool:
     return True
 
 
+async def _database_available(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> bool:
+    """Check whether the DB pool can provide a connection without consuming work."""
+    try:
+        async with session_factory() as session:
+            await session.connection()
+    except (SQLAlchemyError, OSError):
+        return False
+    return True
+
+
 async def _cancel_and_await(task: asyncio.Task[object]) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
@@ -316,70 +329,95 @@ async def _consume_connected(
 ) -> _ConsumeOutcome:
     pipeline_metrics = metrics or IncidentConsumerMetrics()
     database_failures = 0
-    async with broker.queue.iterator() as iterator:
-        while not stop_event.is_set():
-            try:
-                message = await _next_or_stop(iterator, stop_event)
-            except StopAsyncIteration:
-                return _ConsumeOutcome.BROKER_UNAVAILABLE
-            if message is None:
-                return _ConsumeOutcome.STOPPED
-
-            message_context = delivery_log_context(message, consumer_name=CONSUMER_NAME)
-            try:
-                result, stopping = await _run_handler_or_drain(
-                    message,
-                    session_factory,
-                    settings,
-                    stop_event,
-                )
-            except InvalidEventError as error:
-                database_failures = 0
-                pipeline_metrics.record(MessageMetricResult.REJECTED)
-                logger.warning(
-                    "consumer rejected invalid event",
-                    extra={
-                        **message_context,
-                        "event": "message_rejected",
-                        "reason": error.reason,
-                    },
-                )
-                continue
-            except SQLAlchemyError:
-                database_failures += 1
-                pipeline_metrics.record(MessageMetricResult.REQUEUED)
-                delay = _backoff_seconds(
-                    database_failures,
-                    settings,
-                    jitter_source,
-                )
-                logger.warning(
-                    "consumer database operation unavailable; retry scheduled",
-                    extra={
-                        **message_context,
-                        "event": "message_requeued",
-                        "attempt": database_failures,
-                        "delay_seconds": delay,
-                    },
-                )
-                if await _wait_for_stop(stop_event, delay):
+    while not stop_event.is_set():
+        database_retry_delay: float | None = None
+        async with broker.queue.iterator() as iterator:
+            while not stop_event.is_set():
+                try:
+                    message = await _next_or_stop(iterator, stop_event)
+                except StopAsyncIteration:
+                    return _ConsumeOutcome.BROKER_UNAVAILABLE
+                if message is None:
                     return _ConsumeOutcome.STOPPED
-                continue
-            except _BROKER_ERRORS:
-                return _ConsumeOutcome.BROKER_UNAVAILABLE
 
-            if result is None:
-                return _ConsumeOutcome.STOPPED
-            pipeline_metrics.record(
-                MessageMetricResult.PROCESSED
-                if result is ProcessingResult.PROCESSED
-                else MessageMetricResult.DUPLICATE
+                message_context = delivery_log_context(
+                    message, consumer_name=CONSUMER_NAME
+                )
+                try:
+                    result, stopping = await _run_handler_or_drain(
+                        message,
+                        session_factory,
+                        settings,
+                        stop_event,
+                    )
+                except InvalidEventError as error:
+                    database_failures = 0
+                    pipeline_metrics.record(MessageMetricResult.REJECTED)
+                    logger.warning(
+                        "consumer rejected invalid event",
+                        extra={
+                            **message_context,
+                            "event": "message_rejected",
+                            "reason": error.reason,
+                        },
+                    )
+                    continue
+                except (SQLAlchemyError, DatabaseTransportError):
+                    database_failures += 1
+                    pipeline_metrics.record(MessageMetricResult.REQUEUED)
+                    database_retry_delay = _backoff_seconds(
+                        database_failures,
+                        settings,
+                        jitter_source,
+                    )
+                    logger.warning(
+                        "consumer database operation unavailable; retry scheduled",
+                        extra={
+                            **message_context,
+                            "event": "message_requeued",
+                            "attempt": database_failures,
+                            "delay_seconds": database_retry_delay,
+                        },
+                    )
+                    break
+                except _BROKER_ERRORS:
+                    return _ConsumeOutcome.BROKER_UNAVAILABLE
+
+                if result is None:
+                    return _ConsumeOutcome.STOPPED
+                pipeline_metrics.record(
+                    MessageMetricResult.PROCESSED
+                    if result is ProcessingResult.PROCESSED
+                    else MessageMetricResult.DUPLICATE
+                )
+                if stopping:
+                    return _ConsumeOutcome.STOPPED
+                database_failures = 0
+
+        if database_retry_delay is None:
+            return _ConsumeOutcome.STOPPED
+        if await _wait_for_stop(stop_event, database_retry_delay):
+            return _ConsumeOutcome.STOPPED
+        while not await _database_available(session_factory):
+            database_failures += 1
+            database_retry_delay = _backoff_seconds(
+                database_failures,
+                settings,
+                jitter_source,
             )
-            if stopping:
+            logger.warning(
+                "consumer database operation unavailable; retry scheduled",
+                extra={
+                    **message_context,
+                    "event": "message_requeued",
+                    "attempt": database_failures,
+                    "delay_seconds": database_retry_delay,
+                },
+            )
+            if await _wait_for_stop(stop_event, database_retry_delay):
                 return _ConsumeOutcome.STOPPED
-            database_failures = 0
 
-    return _ConsumeOutcome.BROKER_UNAVAILABLE
+    return _ConsumeOutcome.STOPPED
 
 
 def request_shutdown(stop_event: asyncio.Event, signal_name: str) -> None:

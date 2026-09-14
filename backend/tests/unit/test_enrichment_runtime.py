@@ -13,6 +13,7 @@ from aio_pika.exceptions import ChannelInvalidStateError
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
+from signalforge.db.errors import DatabaseTransportError
 from signalforge.enrichment import runtime
 from signalforge.enrichment.consumer import (
     EnrichmentProcessingResult,
@@ -599,11 +600,15 @@ async def test_database_failure_backs_off_without_recreating_engine(
         stop.set()
         return EnrichmentProcessingResult.PROCESSED
 
+    async def database_available(factory: object) -> bool:
+        return True
+
     async def wait(event: asyncio.Event, delay: float) -> bool:
         delays.append(delay)
         return False
 
     monkeypatch.setattr(runtime, "handle_message", handle)
+    monkeypatch.setattr(runtime, "_database_available", database_available)
     monkeypatch.setattr(runtime, "_wait_for_stop", wait)
     result = await runtime._consume_connected(
         broker,
@@ -618,6 +623,62 @@ async def test_database_failure_backs_off_without_recreating_engine(
     assert calls == 2
     assert delays == [0.5]
     assert messages[0].nack_calls == [True]
+
+
+async def test_database_transport_failure_retries_on_same_broker_and_records_requeue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages = [FakeMessage(b"first"), FakeMessage(b"second")]
+    broker = cast(
+        EnrichmentBroker,
+        FakeBroker(FakeIterator(cast(list[object], messages))),
+    )
+    stop = asyncio.Event()
+    metrics = EnrichmentMetrics()
+    calls = 0
+    delays: list[float] = []
+
+    async def handle(*args: object) -> EnrichmentProcessingResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            messages[0].nack_calls.append(True)
+            raise DatabaseTransportError
+        stop.set()
+        return EnrichmentProcessingResult.PROCESSED
+
+    availability = iter((False, True))
+
+    async def database_available(factory: object) -> bool:
+        return next(availability)
+
+    async def wait(event: asyncio.Event, delay: float) -> bool:
+        delays.append(delay)
+        return False
+
+    monkeypatch.setattr(runtime, "handle_message", handle)
+    monkeypatch.setattr(runtime, "_database_available", database_available)
+    monkeypatch.setattr(runtime, "_wait_for_stop", wait)
+    outcome = await runtime._consume_connected(
+        broker,
+        FakeProvider(),
+        cast(Any, object()),
+        settings(),
+        stop,
+        lambda: 0,
+        metrics,
+    )
+
+    assert outcome is runtime._ConsumeOutcome.STOPPED
+    assert calls == 2
+    assert messages[0].nack_calls == [True]
+    assert delays == [0.5, 1.0]
+    assert (
+        metrics.registry.get_sample_value(
+            "signalforge_enrichment_messages_total", {"result": "requeued"}
+        )
+        == 1
+    )
 
 
 async def test_raw_oserror_recycles_broker_generation_without_second_disposition(

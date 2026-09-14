@@ -17,6 +17,7 @@ from signalforge.consumers.incident_created import (
     decode_event,
     handle_message,
 )
+from signalforge.db.errors import DatabaseTransportError
 
 pytestmark = pytest.mark.anyio
 
@@ -28,6 +29,7 @@ class FakeMessage:
         self.reject_calls: list[bool] = []
         self.nack_calls: list[bool] = []
         self.ack_error: BaseException | None = None
+        self.nack_error: BaseException | None = None
 
     async def ack(self) -> None:
         self.ack_calls += 1
@@ -39,6 +41,8 @@ class FakeMessage:
 
     async def nack(self, *, requeue: bool) -> None:
         self.nack_calls.append(requeue)
+        if self.nack_error is not None:
+            raise self.nack_error
 
 
 def valid_body() -> bytes:
@@ -183,6 +187,43 @@ async def test_database_failure_is_nacked_for_requeue_and_propagates(
     assert fake.nack_calls == [True]
     assert fake.ack_calls == 0
     assert fake.reject_calls == []
+
+
+async def test_raw_database_transport_failure_is_nacked_and_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incoming, fake = message(valid_body())
+    secret = "postgresql://user:secret@database/private"
+    monkeypatch.setattr(
+        incident_created, "process_event", AsyncMock(side_effect=OSError(secret))
+    )
+
+    with pytest.raises(DatabaseTransportError) as caught:
+        await handle_message(incoming, cast(async_sessionmaker[AsyncSession], object()))
+
+    assert secret not in str(caught.value)
+    assert fake.nack_calls == [True]
+    assert fake.ack_calls == 0
+    assert fake.reject_calls == []
+
+
+async def test_nack_transport_failure_is_not_wrapped_as_database_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incoming, fake = message(valid_body())
+    fake.nack_error = OSError("RabbitMQ NACK failed")
+    monkeypatch.setattr(
+        incident_created,
+        "process_event",
+        AsyncMock(side_effect=OSError("database unavailable")),
+    )
+
+    with pytest.raises(OSError, match="RabbitMQ NACK failed") as caught:
+        await handle_message(incoming, cast(async_sessionmaker[AsyncSession], object()))
+
+    assert not isinstance(caught.value, DatabaseTransportError)
+    assert fake.nack_calls == [True]
+    assert fake.ack_calls == 0
 
 
 async def test_programming_error_propagates_without_message_disposition(
