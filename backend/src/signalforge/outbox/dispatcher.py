@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from signalforge.core.config import DatabaseSettings
+from signalforge.core.config import DatabaseSettings, MetricsHost, MetricsPort
+from signalforge.observability.exposition import MetricsHttpServer
 from signalforge.observability.logging import configure_logging
 from signalforge.observability.metrics import (
     OutboxDispatchMetricResult,
@@ -45,6 +46,8 @@ class DispatcherSettings(DatabaseSettings):
     model_config = SettingsConfigDict(hide_input_in_errors=True)
 
     rabbitmq_url: AmqpDsn
+    metrics_host: MetricsHost = "127.0.0.1"
+    metrics_port: MetricsPort = 9101
     dispatcher_batch_size: PositiveInteger = 100
     dispatcher_claim_lease_seconds: PositiveSeconds = 30
     dispatcher_publish_timeout_seconds: PositiveSeconds = 10
@@ -492,13 +495,50 @@ async def run_dispatcher(
 
 async def async_main() -> None:
     settings = DispatcherSettings()  # type: ignore[call-arg]
+    pipeline_metrics = OutboxMetrics()
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     installed = install_signal_handlers(loop, stop_event)
+    metrics_server: MetricsHttpServer | None = None
     try:
-        await run_dispatcher(settings, stop_event=stop_event)
+        try:
+            metrics_server = MetricsHttpServer.start(
+                pipeline_metrics.registry,
+                host=settings.metrics_host,
+                port=settings.metrics_port,
+            )
+        except Exception:
+            logger.warning(
+                "metrics server could not start",
+                extra={"event": "metrics_server_start_failed"},
+            )
+        else:
+            logger.info(
+                "metrics server started",
+                extra={
+                    "event": "metrics_server_started",
+                    "metrics_host": settings.metrics_host,
+                    "metrics_port": settings.metrics_port,
+                },
+            )
+        await run_dispatcher(settings, stop_event=stop_event, metrics=pipeline_metrics)
     finally:
-        remove_signal_handlers(loop, installed)
+        try:
+            if metrics_server is not None:
+                try:
+                    await asyncio.to_thread(metrics_server.stop)
+                except Exception:
+                    logger.warning(
+                        "metrics server cleanup failed",
+                        extra={"event": "metrics_server_stop_failed"},
+                    )
+                else:
+                    logger.info(
+                        "metrics server stopped",
+                        extra={"event": "metrics_server_stopped"},
+                    )
+        finally:
+            remove_signal_handlers(loop, installed)
 
 
 def main() -> None:

@@ -79,9 +79,13 @@ services:
     environment:
       SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-signalforge}:${POSTGRES_PASSWORD:-signalforge-local}@postgres:5432/${POSTGRES_DB:-signalforge}
       SIGNALFORGE_RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-signalforge}:${RABBITMQ_DEFAULT_PASS:-signalforge-local}@rabbitmq:5672/signalforge
+      SIGNALFORGE_METRICS_HOST: 0.0.0.0
+      SIGNALFORGE_METRICS_PORT: 9101
     depends_on:
       postgres:
         condition: service_healthy
+    ports:
+      - "127.0.0.1:${DISPATCHER_METRICS_PORT:-9101}:9101"
 
   consumer:
     <<: *application-image
@@ -92,9 +96,13 @@ services:
     environment:
       SIGNALFORGE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-signalforge}:${POSTGRES_PASSWORD:-signalforge-local}@postgres:5432/${POSTGRES_DB:-signalforge}
       SIGNALFORGE_RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-signalforge}:${RABBITMQ_DEFAULT_PASS:-signalforge-local}@rabbitmq:5672/signalforge
+      SIGNALFORGE_METRICS_HOST: 0.0.0.0
+      SIGNALFORGE_METRICS_PORT: 9102
     depends_on:
       postgres:
         condition: service_healthy
+    ports:
+      - "127.0.0.1:${CONSUMER_METRICS_PORT:-9102}:9102"
 
   enrichment-worker:
     <<: *application-image
@@ -109,9 +117,13 @@ services:
       SIGNALFORGE_RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-signalforge}:${RABBITMQ_DEFAULT_PASS:-signalforge-local}@rabbitmq:5672/signalforge
       SIGNALFORGE_GEMINI_API_KEY: ${SIGNALFORGE_GEMINI_API_KEY:-}
       SIGNALFORGE_GEMINI_MODEL: ${SIGNALFORGE_GEMINI_MODEL:-gemini-3.8-flash}
+      SIGNALFORGE_METRICS_HOST: 0.0.0.0
+      SIGNALFORGE_METRICS_PORT: 9103
     depends_on:
       postgres:
         condition: service_healthy
+    ports:
+      - "127.0.0.1:${ENRICHMENT_METRICS_PORT:-9103}:9103"
 
 volumes:
   signalforge-postgres-data:
