@@ -7,9 +7,12 @@ from pydantic import (
     PostgresDsn,
     SecretStr,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from signalforge.remediation.targets import ServiceTarget
 
 MetricsHost = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 MetricsPort = Annotated[int, Field(ge=1, le=65535)]
@@ -79,6 +82,36 @@ class EnrichmentSettings(BaseSettings):
     ] = "gemini-3.8-flash"
 
 
+class RemediationExecutionSettings(BaseSettings):
+    """Settings loaded only by trusted remediation execution code."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="SIGNALFORGE_REMEDIATION_",
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        hide_input_in_errors=True,
+    )
+
+    restart_endpoints: dict[ServiceTarget, HttpUrl] = Field(default_factory=dict)
+    request_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 5.0
+
+    @field_validator("restart_endpoints")
+    @classmethod
+    def reject_endpoint_url_extras(
+        cls,
+        endpoints: dict[str, HttpUrl],
+    ) -> dict[str, HttpUrl]:
+        for endpoint in endpoints.values():
+            if endpoint.username is not None or endpoint.password is not None:
+                raise ValueError("restart endpoint must not contain credentials")
+            if endpoint.query is not None:
+                raise ValueError("restart endpoint must not contain a query string")
+            if endpoint.fragment is not None:
+                raise ValueError("restart endpoint must not contain a fragment")
+        return endpoints
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]
@@ -92,3 +125,8 @@ def get_enrichment_settings() -> EnrichmentSettings:
 @lru_cache
 def get_tracing_settings() -> TracingSettings:
     return TracingSettings()
+
+
+@lru_cache
+def get_remediation_execution_settings() -> RemediationExecutionSettings:
+    return RemediationExecutionSettings()
