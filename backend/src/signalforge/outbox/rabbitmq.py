@@ -39,6 +39,10 @@ from signalforge.observability.propagation import (
     inject_trace_context,
 )
 from signalforge.outbox.dispatching import ClaimSnapshot, FrozenJSON
+from signalforge.remediation.events import (
+    RemediationExecutionRequested,
+    RemediationExecutionRequestedPayload,
+)
 from signalforge.triage.events import (
     TriageEnrichmentRequested,
     TriageEnrichmentRequestedPayload,
@@ -49,13 +53,18 @@ QUEUE_NAME = "signalforge.incident-events"
 ROUTING_KEY = "incident.created"
 ENRICHMENT_QUEUE_NAME = "signalforge.triage-enrichment"
 ENRICHMENT_ROUTING_KEY = "triage.enrichment.requested"
+REMEDIATION_EXECUTION_QUEUE_NAME = "signalforge.remediation-execution"
+REMEDIATION_EXECUTION_ROUTING_KEY = "remediation.execution.requested"
 _ROUTING_KEYS = {
     "incident.created": ROUTING_KEY,
     "triage.enrichment.requested": ENRICHMENT_ROUTING_KEY,
+    "remediation.execution.requested": REMEDIATION_EXECUTION_ROUTING_KEY,
 }
 _TRANSPORT_ERRORS = (AMQPError, ChannelInvalidStateError, OSError, PAMQPException)
 
-type PublishableEvent = IncidentCreated | TriageEnrichmentRequested
+type PublishableEvent = (
+    IncidentCreated | TriageEnrichmentRequested | RemediationExecutionRequested
+)
 
 
 class StoredEventError(ValueError):
@@ -125,10 +134,17 @@ def reconstruct_event(claim: ClaimSnapshot) -> PublishableEvent:
                     "payload": IncidentCreatedPayload.model_validate(payload),
                 }
             )
-        return TriageEnrichmentRequested.model_validate(
+        if claim.event_type == ENRICHMENT_ROUTING_KEY:
+            return TriageEnrichmentRequested.model_validate(
+                {
+                    **envelope,
+                    "payload": TriageEnrichmentRequestedPayload.model_validate(payload),
+                }
+            )
+        return RemediationExecutionRequested.model_validate(
             {
                 **envelope,
-                "payload": TriageEnrichmentRequestedPayload.model_validate(payload),
+                "payload": RemediationExecutionRequestedPayload.model_validate(payload),
             }
         )
     except ValidationError:
@@ -180,6 +196,19 @@ async def declare_topology(
         await enrichment_queue.bind(
             exchange,
             routing_key=ENRICHMENT_ROUTING_KEY,
+            timeout=timeout,
+        )
+        remediation_execution_queue = await channel.declare_queue(
+            REMEDIATION_EXECUTION_QUEUE_NAME,
+            durable=True,
+            exclusive=False,
+            auto_delete=False,
+            arguments={"x-queue-type": "classic"},
+            timeout=timeout,
+        )
+        await remediation_execution_queue.bind(
+            exchange,
+            routing_key=REMEDIATION_EXECUTION_ROUTING_KEY,
             timeout=timeout,
         )
         return exchange

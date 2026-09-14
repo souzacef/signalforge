@@ -7,17 +7,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from signalforge.auth.authorization import require_roles
 from signalforge.db.session import get_session
-from signalforge.remediation import service
+from signalforge.remediation import application, service
 from signalforge.remediation.errors import (
     DuplicatePendingRemediationProposalError,
     IncidentNotEligibleForRemediationError,
     IncidentNotFoundForRemediationError,
     InvalidRemediationTransitionError,
+    RemediationExecutionAlreadyRequestedError,
+    RemediationProposalNotApprovedForExecutionError,
     RemediationProposalNotFoundError,
     RemediationSelfApprovalError,
 )
 from signalforge.remediation.models import RemediationProposal
 from signalforge.remediation.schemas import (
+    RemediationExecutionResponse,
     RemediationProposalCreate,
     RemediationProposalListQuery,
     RemediationProposalListResponse,
@@ -178,6 +181,55 @@ async def approve_remediation_proposal(
         },
     )
     return proposal
+
+
+@router.post(
+    "/{proposal_id}/execute",
+    response_model=RemediationExecutionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_remediation_execution(
+    proposal_id: UUID,
+    session: DatabaseSession,
+    actor: ProposalApprover,
+) -> RemediationExecutionResponse:
+    try:
+        execution = await application.request_remediation_execution_with_event(
+            session, proposal_id, actor.id
+        )
+    except RemediationProposalNotFoundError as error:
+        await _rollback_and_raise(
+            session,
+            error,
+            status.HTTP_404_NOT_FOUND,
+            "Remediation proposal not found",
+        )
+    except RemediationProposalNotApprovedForExecutionError as error:
+        await _rollback_and_raise(
+            session,
+            error,
+            status.HTTP_409_CONFLICT,
+            "Remediation proposal is not approved for execution",
+        )
+    except RemediationExecutionAlreadyRequestedError as error:
+        await _rollback_and_raise(
+            session,
+            error,
+            status.HTTP_409_CONFLICT,
+            "Execution has already been requested for this remediation proposal",
+        )
+    logger.info(
+        "remediation execution requested",
+        extra={
+            "event": "remediation_execution_requested",
+            "execution_id": execution.id,
+            "proposal_id": execution.proposal_id,
+            "action_kind": execution.action_kind,
+            "target": execution.target,
+            "status": execution.status,
+        },
+    )
+    return execution
 
 
 @router.post(

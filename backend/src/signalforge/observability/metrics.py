@@ -78,7 +78,11 @@ class ProviderMetricResult(StrEnum):
 
 
 _ALLOWED_EVENT_TYPES: Final = frozenset(
-    {"incident.created", "triage.enrichment.requested"}
+    {
+        "incident.created",
+        "triage.enrichment.requested",
+        "remediation.execution.requested",
+    }
 )
 
 

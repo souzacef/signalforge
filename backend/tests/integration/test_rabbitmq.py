@@ -25,6 +25,8 @@ from signalforge.outbox.rabbitmq import (
     ENRICHMENT_ROUTING_KEY,
     EXCHANGE_NAME,
     QUEUE_NAME,
+    REMEDIATION_EXECUTION_QUEUE_NAME,
+    REMEDIATION_EXECUTION_ROUTING_KEY,
     ROUTING_KEY,
     PublishFailedError,
     RabbitMQPublisher,
@@ -196,6 +198,36 @@ async def test_confirmed_persistent_publication_matches_durable_snapshot(
     assert (await read_event(claim.id))["published_at"] is not None
 
 
+async def test_remediation_request_routes_to_durable_execution_queue(
+    broker: Broker,
+    publisher: RabbitMQPublisher,
+    claim: ClaimSnapshot,
+) -> None:
+    remediation_claim = replace(
+        claim,
+        event_type=REMEDIATION_EXECUTION_ROUTING_KEY,
+        payload=MappingProxyType(
+            {
+                "proposal_id": str(uuid4()),
+                "action_kind": "restart_service",
+                "target": "checkout-api",
+            }
+        ),
+    )
+    await publisher.publish(remediation_claim, timeout=5)
+
+    queue = await publisher._channel.get_queue(REMEDIATION_EXECUTION_QUEUE_NAME)
+    message = await queue.get(no_ack=True, fail=True, timeout=5)
+    assert message.message_id == str(remediation_claim.id)
+    assert message.type == REMEDIATION_EXECUTION_ROUTING_KEY
+    assert message.delivery_mode == aio_pika.DeliveryMode.PERSISTENT
+    assert json.loads(message.body)["payload"] == {
+        "proposal_id": remediation_claim.payload["proposal_id"],
+        "action_kind": "restart_service",
+        "target": "checkout-api",
+    }
+
+
 async def test_topology_is_idempotent_and_usable_across_startups(
     broker: Broker, claim: ClaimSnapshot
 ) -> None:
@@ -224,6 +256,17 @@ async def test_topology_is_idempotent_and_usable_across_startups(
             f"/api/bindings/{broker.vhost}/e/{EXCHANGE_NAME}/q/{ENRICHMENT_QUEUE_NAME}"
         )
     ).json()
+    remediation_queue = (
+        await broker.api.get(
+            f"/api/queues/{broker.vhost}/{REMEDIATION_EXECUTION_QUEUE_NAME}"
+        )
+    ).json()
+    remediation_bindings = (
+        await broker.api.get(
+            f"/api/bindings/{broker.vhost}/e/{EXCHANGE_NAME}/q/"
+            f"{REMEDIATION_EXECUTION_QUEUE_NAME}"
+        )
+    ).json()
     assert exchange["type"] == "direct" and exchange["durable"] is True
     assert queue["type"] == "classic" and queue["durable"] is True
     assert queue["auto_delete"] is queue["exclusive"] is False
@@ -233,6 +276,12 @@ async def test_topology_is_idempotent_and_usable_across_startups(
     assert enrichment_queue["auto_delete"] is enrichment_queue["exclusive"] is False
     assert [binding["routing_key"] for binding in enrichment_bindings] == [
         ENRICHMENT_ROUTING_KEY
+    ]
+    assert remediation_queue["type"] == "classic"
+    assert remediation_queue["durable"] is True
+    assert remediation_queue["auto_delete"] is remediation_queue["exclusive"] is False
+    assert [binding["routing_key"] for binding in remediation_bindings] == [
+        REMEDIATION_EXECUTION_ROUTING_KEY
     ]
 
 

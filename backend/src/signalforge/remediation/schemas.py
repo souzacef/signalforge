@@ -13,6 +13,7 @@ from pydantic import (
 
 from signalforge.remediation.models import (
     RemediationActionKind,
+    RemediationExecutionStatus,
     RemediationProposalStatus,
 )
 from signalforge.remediation.targets import ServiceTarget
@@ -96,3 +97,16 @@ class RemediationProposalListResponse(BaseModel):
     limit: int
     offset: int
     total: int
+
+
+class RemediationExecutionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    proposal_id: UUID
+    action_kind: RemediationActionKind
+    target: str
+    status: RemediationExecutionStatus
+    requested_by_user_id: UUID
+    requested_at: datetime
+    updated_at: datetime

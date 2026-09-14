@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from unittest.mock import AsyncMock, Mock
@@ -26,7 +27,11 @@ from signalforge.observability.tracing import (
     create_tracing_runtime,
 )
 from signalforge.outbox.dispatching import ClaimSnapshot
-from signalforge.outbox.rabbitmq import PublishFailedError, RabbitMQPublisher
+from signalforge.outbox.rabbitmq import (
+    REMEDIATION_EXECUTION_ROUTING_KEY,
+    PublishFailedError,
+    RabbitMQPublisher,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -130,6 +135,39 @@ async def test_producer_span_continues_stored_context_and_injects_its_context() 
         runtime.shutdown()
 
 
+async def test_remediation_event_continues_and_propagates_durable_context() -> None:
+    runtime, exporter = tracing_runtime()
+    broker = publisher()
+    stored = replace(
+        claim(),
+        event_type=REMEDIATION_EXECUTION_ROUTING_KEY,
+        payload=MappingProxyType(
+            {
+                "proposal_id": str(uuid4()),
+                "action_kind": "restart_service",
+                "target": "checkout-api",
+            }
+        ),
+    )
+    try:
+        tracer = runtime.get_tracer("test.publisher")
+        assert tracer is not None
+        await broker.publish(stored, timeout=1, tracer=tracer)
+
+        (span,) = exporter.get_finished_spans()
+        assert span.parent is not None
+        assert span.parent.span_id == int(PARENT_ID, 16)
+        message = broker._exchange.publish.call_args.args[0]
+        assert message.headers["traceparent"].split("-")[1] == TRACE_ID
+        assert message.headers["tracestate"] == "vendor=value"
+        assert broker._exchange.publish.call_args.kwargs["routing_key"] == (
+            REMEDIATION_EXECUTION_ROUTING_KEY
+        )
+        assert "traceparent" not in json.loads(message.body)
+    finally:
+        runtime.shutdown()
+
+
 async def test_repeated_attempts_are_distinct_siblings_of_durable_parent() -> None:
     runtime, exporter = tracing_runtime()
     broker = publisher()
@@ -175,8 +213,6 @@ async def test_unsampled_parent_stays_unsampled_but_is_injected() -> None:
 
 
 async def test_invalid_durable_context_starts_root_producer_span() -> None:
-    from dataclasses import replace
-
     runtime, exporter = tracing_runtime()
     broker = publisher()
     try:

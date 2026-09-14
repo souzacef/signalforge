@@ -3,7 +3,16 @@ from enum import Enum as PythonEnum
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Index, String, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import text
@@ -19,6 +28,10 @@ class RemediationProposalStatus(StrEnum):
     PENDING_APPROVAL = "pending_approval"
     APPROVED = "approved"
     REJECTED = "rejected"
+
+
+class RemediationExecutionStatus(StrEnum):
+    REQUESTED = "requested"
 
 
 def _enum_values(enum_class: type[PythonEnum]) -> list[str]:
@@ -147,6 +160,77 @@ class RemediationProposal(Base):
     )
     rejection_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class RemediationExecution(Base):
+    __tablename__ = "remediation_executions"
+    __table_args__ = (
+        CheckConstraint(
+            "char_length(target) BETWEEN 1 AND 100 "
+            "AND target ~ '^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$'",
+            name="ck_remediation_executions_target_logical_service",
+        ),
+        UniqueConstraint(
+            "proposal_id",
+            name="uq_remediation_executions_proposal_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    proposal_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "remediation_proposals.id",
+            name="fk_remediation_executions_proposal_id_remediation_proposals",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    action_kind: Mapped[RemediationActionKind] = mapped_column(
+        Enum(
+            RemediationActionKind,
+            name="remediation_execution_action_kind",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+    )
+    target: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[RemediationExecutionStatus] = mapped_column(
+        Enum(
+            RemediationExecutionStatus,
+            name="remediation_execution_status",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+        default=RemediationExecutionStatus.REQUESTED,
+        server_default=RemediationExecutionStatus.REQUESTED.value,
+    )
+    requested_by_user_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_remediation_executions_requested_by_user_id_users",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(

@@ -2,6 +2,14 @@ class RemediationProposalNotFoundError(Exception):
     """Raised when a requested remediation proposal does not exist."""
 
 
+class RemediationProposalNotApprovedForExecutionError(Exception):
+    """Raised when execution is requested for a non-approved proposal."""
+
+
+class RemediationExecutionAlreadyRequestedError(Exception):
+    """Raised when a proposal already has its one logical execution request."""
+
+
 class IncidentNotFoundForRemediationError(Exception):
     """Raised when a remediation proposal references a missing Incident."""
 

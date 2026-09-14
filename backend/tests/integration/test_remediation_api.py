@@ -1,5 +1,6 @@
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,8 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from signalforge.incidents.models import Incident, IncidentSeverity, IncidentStatus
 from signalforge.outbox.models import OutboxEvent
+from signalforge.remediation.execution import AllowlistedHttpRemediationExecutor
 from signalforge.remediation.models import (
     RemediationActionKind,
+    RemediationExecution,
     RemediationProposal,
     RemediationProposalStatus,
 )
@@ -144,7 +147,10 @@ def endpoint_calls(client: AsyncClient, incident: Incident) -> list[RequestCall]
             f"{PROPOSALS_PATH}/{missing}/reject", json=REJECTION, headers=headers
         )
 
-    return [create, list_items, get, approve, reject]
+    async def execute(headers: dict[str, str] | None) -> Response:
+        return await client.post(f"{PROPOSALS_PATH}/{missing}/execute", headers=headers)
+
+    return [create, list_items, get, approve, reject, execute]
 
 
 async def test_all_endpoints_require_authentication(
@@ -535,8 +541,13 @@ async def test_admin_approval_persists_without_execution_or_outbox_effect(
         outbox_after = (
             await session.scalar(select(func.count()).select_from(OutboxEvent)) or 0
         )
+        execution_count = (
+            await session.scalar(select(func.count()).select_from(RemediationExecution))
+            or 0
+        )
         unchanged_incident = await session.get(Incident, incident.id)
     assert outbox_after == outbox_before
+    assert execution_count == 0
     assert unchanged_incident is not None
     assert unchanged_incident.status is IncidentStatus.OPEN
 
@@ -759,3 +770,178 @@ async def test_reject_body_is_required_and_forbids_extra_fields(
     assert (
         await stored_proposal(database_session_factory, proposal.id)
     ).status is RemediationProposalStatus.PENDING_APPROVAL
+
+
+@pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.OPERATOR])
+async def test_only_admin_can_request_execution(
+    role: UserRole,
+    client: AsyncClient,
+    incident: Incident,
+    auth_headers_factory: AuthHeadersFactory,
+    database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, proposer = await auth_headers_factory(UserRole.OPERATOR)
+    _, reviewer = await auth_headers_factory(UserRole.ADMIN)
+    proposal = await create_via_service(
+        database_session_factory, incident.id, proposer.id
+    )
+    await transition_via_service(
+        database_session_factory, proposal.id, reviewer.id, "approve"
+    )
+    headers, _ = await auth_headers_factory(role)
+
+    response = await client.post(
+        f"{PROPOSALS_PATH}/{proposal.id}/execute", headers=headers
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Insufficient permissions"}
+    async with database_session_factory() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(RemediationExecution)
+            .where(RemediationExecution.proposal_id == proposal.id)
+        )
+    assert count == 0
+
+
+async def test_admin_execute_returns_durable_snapshot_and_never_calls_actuator(
+    client: AsyncClient,
+    incident: Incident,
+    auth_headers_factory: AuthHeadersFactory,
+    database_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, proposer = await auth_headers_factory(UserRole.OPERATOR)
+    _, reviewer = await auth_headers_factory(UserRole.ADMIN)
+    headers, requester = await auth_headers_factory(UserRole.ADMIN)
+    proposal = await create_via_service(
+        database_session_factory,
+        incident.id,
+        proposer.id,
+        target="checkout-api",
+        reason="Sensitive operational rationale that must stay on the proposal",
+    )
+    await transition_via_service(
+        database_session_factory, proposal.id, reviewer.id, "approve"
+    )
+    actuator = AsyncMock(side_effect=AssertionError("actuator must remain dormant"))
+    monkeypatch.setattr(AllowlistedHttpRemediationExecutor, "execute", actuator)
+
+    response = await client.post(
+        f"{PROPOSALS_PATH}/{proposal.id}/execute",
+        json={
+            "target": "attacker-target",
+            "action_kind": "shell_command",
+            "status": "succeeded",
+            "endpoint_url": "https://attacker.invalid",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert set(body) == {
+        "id",
+        "proposal_id",
+        "action_kind",
+        "target",
+        "status",
+        "requested_by_user_id",
+        "requested_at",
+        "updated_at",
+    }
+    assert body["proposal_id"] == str(proposal.id)
+    assert body["action_kind"] == "restart_service"
+    assert body["target"] == "checkout-api"
+    assert body["status"] == "requested"
+    assert body["requested_by_user_id"] == str(requester.id)
+    actuator.assert_not_awaited()
+
+    execution_id = UUID(body["id"])
+    async with database_session_factory() as session:
+        execution = await session.get(RemediationExecution, execution_id)
+        outbox = await session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.event_type == "remediation.execution.requested",
+                OutboxEvent.aggregate_id == execution_id,
+            )
+        )
+        unchanged_incident = await session.get(Incident, incident.id)
+    assert execution is not None
+    assert execution.target == "checkout-api"
+    assert outbox is not None
+    assert outbox.payload == {
+        "proposal_id": str(proposal.id),
+        "action_kind": "restart_service",
+        "target": "checkout-api",
+    }
+    assert unchanged_incident is not None
+    assert unchanged_incident.status is IncidentStatus.OPEN
+
+
+async def test_execute_eligibility_and_duplicate_errors_are_stable(
+    client: AsyncClient,
+    incident: Incident,
+    auth_headers_factory: AuthHeadersFactory,
+    database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, proposer = await auth_headers_factory(UserRole.OPERATOR)
+    headers, admin = await auth_headers_factory(UserRole.ADMIN)
+    pending = await create_via_service(
+        database_session_factory, incident.id, proposer.id, target="pending-api"
+    )
+    rejected = await create_via_service(
+        database_session_factory, incident.id, proposer.id, target="rejected-api"
+    )
+    approved = await create_via_service(
+        database_session_factory, incident.id, proposer.id, target="approved-api"
+    )
+    await transition_via_service(
+        database_session_factory, rejected.id, admin.id, "reject"
+    )
+    await transition_via_service(
+        database_session_factory, approved.id, admin.id, "approve"
+    )
+
+    missing = await client.post(f"{PROPOSALS_PATH}/{uuid4()}/execute", headers=headers)
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "Remediation proposal not found"}
+    for proposal in (pending, rejected):
+        response = await client.post(
+            f"{PROPOSALS_PATH}/{proposal.id}/execute", headers=headers
+        )
+        assert response.status_code == 409
+        assert response.json() == {
+            "detail": "Remediation proposal is not approved for execution"
+        }
+
+    first = await client.post(
+        f"{PROPOSALS_PATH}/{approved.id}/execute", headers=headers
+    )
+    duplicate = await client.post(
+        f"{PROPOSALS_PATH}/{approved.id}/execute", headers=headers
+    )
+    assert first.status_code == 202
+    assert duplicate.status_code == 409
+    assert duplicate.json() == {
+        "detail": "Execution has already been requested for this remediation proposal"
+    }
+    recovery = await client.get(f"{PROPOSALS_PATH}/{approved.id}", headers=headers)
+    assert recovery.status_code == 200
+    async with database_session_factory() as session:
+        executions = await session.scalar(
+            select(func.count())
+            .select_from(RemediationExecution)
+            .where(RemediationExecution.proposal_id == approved.id)
+        )
+        events = await session.scalar(
+            select(func.count())
+            .select_from(OutboxEvent)
+            .where(
+                OutboxEvent.event_type == "remediation.execution.requested",
+                OutboxEvent.aggregate_id == UUID(first.json()["id"]),
+            )
+        )
+    assert executions == 1
+    assert events == 1
