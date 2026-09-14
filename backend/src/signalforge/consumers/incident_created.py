@@ -1,6 +1,7 @@
 """Process one incident.created v1 delivery; no consumer loop or broker setup."""
 
 import json
+import logging
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from signalforge.consumers.models import ProcessedEvent
 from signalforge.incidents.events import IncidentCreated
+from signalforge.observability.logging import bind_log_context
 from signalforge.outbox.models import OutboxEvent
 from signalforge.triage.events import (
     TriageEnrichmentRequested,
@@ -23,6 +25,8 @@ from signalforge.triage.models import IncidentTriage
 from signalforge.triage.rules import determine_triage
 
 CONSUMER_NAME = "incident-created-consumer"
+
+logger = logging.getLogger(__name__)
 
 
 class ProcessingResult(StrEnum):
@@ -146,12 +150,29 @@ async def handle_message(
         await message.reject(requeue=False)
         raise
 
-    try:
-        result = await process_event(event, session_factory)
-    except (SQLAlchemyError, OSError):
-        # asyncpg may expose raw transport OSErrors before SQLAlchemy wraps them.
-        await message.nack(requeue=True)
-        raise
+    with bind_log_context(
+        event_id=event.event_id,
+        event_type=event.event_type,
+        event_version=event.event_version,
+        incident_id=event.aggregate_id,
+        consumer_name=CONSUMER_NAME,
+    ):
+        try:
+            result = await process_event(event, session_factory)
+        except (SQLAlchemyError, OSError):
+            # asyncpg may expose raw transport OSErrors before SQLAlchemy wraps them.
+            await message.nack(requeue=True)
+            raise
 
-    await message.ack()
-    return result
+        await message.ack()
+        logger.info(
+            "consumer message handled",
+            extra={
+                "event": (
+                    "message_processed"
+                    if result is ProcessingResult.PROCESSED
+                    else "message_duplicate"
+                )
+            },
+        )
+        return result

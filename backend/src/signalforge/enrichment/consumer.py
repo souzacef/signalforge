@@ -1,6 +1,7 @@
 """Process one triage.enrichment.requested v1 delivery; no broker runtime."""
 
 import json
+import logging
 from enum import StrEnum
 from typing import Literal
 from uuid import UUID
@@ -21,9 +22,12 @@ from signalforge.enrichment.provider import (
     ProviderFailureReason,
     TransientEnrichmentError,
 )
+from signalforge.observability.logging import bind_log_context
 from signalforge.triage.events import TriageEnrichmentRequested
 
 CONSUMER_NAME = "triage-enrichment-consumer"
+
+logger = logging.getLogger(__name__)
 
 
 class EnrichmentProcessingResult(StrEnum):
@@ -165,17 +169,35 @@ async def handle_message(
         await message.reject(requeue=False)
         raise
 
-    try:
-        result = await process_event(event, provider, session_factory)
-    except TransientEnrichmentError:
-        await message.nack(requeue=True)
-        raise
-    except PermanentEnrichmentError:
-        await message.reject(requeue=False)
-        raise
-    except (SQLAlchemyError, OSError):
-        await message.nack(requeue=True)
-        raise
+    with bind_log_context(
+        event_id=event.event_id,
+        trigger_event_id=event.payload.trigger_event_id,
+        event_type=event.event_type,
+        event_version=event.event_version,
+        incident_id=event.aggregate_id,
+        consumer_name=CONSUMER_NAME,
+    ):
+        try:
+            result = await process_event(event, provider, session_factory)
+        except TransientEnrichmentError:
+            await message.nack(requeue=True)
+            raise
+        except PermanentEnrichmentError:
+            await message.reject(requeue=False)
+            raise
+        except (SQLAlchemyError, OSError):
+            await message.nack(requeue=True)
+            raise
 
-    await message.ack()
-    return result
+        await message.ack()
+        logger.info(
+            "enrichment message handled",
+            extra={
+                "event": (
+                    "enrichment_processed"
+                    if result is EnrichmentProcessingResult.PROCESSED
+                    else "enrichment_duplicate"
+                )
+            },
+        )
+        return result

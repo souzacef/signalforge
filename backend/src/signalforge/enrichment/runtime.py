@@ -34,6 +34,7 @@ from yarl import URL
 
 from signalforge.core.config import DatabaseSettings, EnrichmentSettings
 from signalforge.enrichment.consumer import (
+    CONSUMER_NAME,
     EnrichmentProcessingResult,
     InvalidEnrichmentEventError,
     handle_message,
@@ -43,6 +44,11 @@ from signalforge.enrichment.provider import (
     EnrichmentProvider,
     PermanentEnrichmentError,
     TransientEnrichmentError,
+)
+from signalforge.observability.logging import (
+    bind_log_context,
+    configure_logging,
+    delivery_log_context,
 )
 from signalforge.outbox.dispatching import retry_delay
 from signalforge.outbox.rabbitmq import ENRICHMENT_QUEUE_NAME, declare_topology
@@ -270,7 +276,7 @@ async def _next_or_stop(
         raise
 
 
-async def _run_handler_or_drain(
+async def _run_handler_with_context(
     message: AbstractIncomingMessage,
     provider: EnrichmentProvider,
     session_factory: async_sessionmaker[AsyncSession],
@@ -297,20 +303,40 @@ async def _run_handler_or_drain(
             await _cancel_and_await(stop_task)
             return await handler_task, stop_event.is_set()
 
-        logger.info("enrichment worker draining active delivery")
+        logger.info(
+            "enrichment worker draining active delivery",
+            extra={"event": "enrichment_delivery_draining"},
+        )
         try:
             result = await asyncio.wait_for(
                 asyncio.shield(handler_task),
                 timeout=settings.enrichment_worker_shutdown_drain_timeout_seconds,
             )
         except TimeoutError:
-            logger.warning("enrichment worker forcing active delivery cancellation")
+            logger.warning(
+                "enrichment worker forcing active delivery cancellation",
+                extra={"event": "enrichment_delivery_cancelled"},
+            )
             await _cancel_and_await(handler_task)
             return None, True
         return result, True
     except asyncio.CancelledError:
         await _cancel_and_collect(handler_task, stop_task)
         raise
+
+
+async def _run_handler_or_drain(
+    message: AbstractIncomingMessage,
+    provider: EnrichmentProvider,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: EnrichmentWorkerSettings,
+    stop_event: asyncio.Event,
+) -> tuple[EnrichmentProcessingResult | None, bool]:
+    context = delivery_log_context(message, consumer_name=CONSUMER_NAME)
+    with bind_log_context(**context):
+        return await _run_handler_with_context(
+            message, provider, session_factory, settings, stop_event
+        )
 
 
 async def _consume_connected(
@@ -331,6 +357,7 @@ async def _consume_connected(
             if message is None:
                 return _ConsumeOutcome.STOPPED
 
+            message_context = delivery_log_context(message, consumer_name=CONSUMER_NAME)
             try:
                 result, stopping = await _run_handler_or_drain(
                     message,
@@ -343,7 +370,11 @@ async def _consume_connected(
                 processing_failures = 0
                 logger.warning(
                     "enrichment worker rejected invalid event",
-                    extra={"reason": error.reason},
+                    extra={
+                        **message_context,
+                        "event": "message_rejected",
+                        "reason": error.reason,
+                    },
                 )
                 if stop_event.is_set():
                     return _ConsumeOutcome.STOPPED
@@ -352,7 +383,11 @@ async def _consume_connected(
                 processing_failures = 0
                 logger.warning(
                     "enrichment worker handled terminal provider failure",
-                    extra={"reason": error.reason},
+                    extra={
+                        **message_context,
+                        "event": "provider_permanent_failure",
+                        "reason": error.reason,
+                    },
                 )
                 if stop_event.is_set():
                     return _ConsumeOutcome.STOPPED
@@ -368,6 +403,8 @@ async def _consume_connected(
                 logger.warning(
                     "enrichment provider unavailable; retry scheduled",
                     extra={
+                        **message_context,
+                        "event": "provider_transient_failure",
                         "reason": error.reason,
                         "attempt": processing_failures,
                         "delay_seconds": delay,
@@ -387,6 +424,8 @@ async def _consume_connected(
                 logger.warning(
                     "enrichment database unavailable; retry scheduled",
                     extra={
+                        **message_context,
+                        "event": "message_requeued",
                         "attempt": processing_failures,
                         "delay_seconds": delay,
                     },
@@ -400,16 +439,15 @@ async def _consume_connected(
             if result is None or stopping:
                 return _ConsumeOutcome.STOPPED
             processing_failures = 0
-            if result is EnrichmentProcessingResult.PROCESSED:
-                logger.info("enrichment message processed")
-            else:
-                logger.info("duplicate enrichment message ignored")
 
     return _ConsumeOutcome.BROKER_UNAVAILABLE
 
 
 def request_shutdown(stop_event: asyncio.Event, signal_name: str) -> None:
-    logger.info("enrichment worker shutdown requested", extra={"signal": signal_name})
+    logger.info(
+        "enrichment worker shutdown requested",
+        extra={"event": "enrichment_worker_stopping", "signal": signal_name},
+    )
     stop_event.set()
 
 
@@ -429,7 +467,10 @@ def install_signal_handlers(
         except (NotImplementedError, RuntimeError):
             logger.warning(
                 "enrichment worker signal handler unavailable",
-                extra={"signal": process_signal.name},
+                extra={
+                    "event": "enrichment_signal_handler_unavailable",
+                    "signal": process_signal.name,
+                },
             )
         else:
             installed.append(process_signal)
@@ -457,7 +498,9 @@ async def run_worker(
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     broker: EnrichmentBroker | None = None
     reconnect_failures = 0
-    logger.info("enrichment worker starting")
+    logger.info(
+        "enrichment worker starting", extra={"event": "enrichment_worker_started"}
+    )
     try:
         while not stop.is_set():
             if broker is None:
@@ -474,6 +517,7 @@ async def run_worker(
                     logger.warning(
                         "RabbitMQ connection unavailable; enrichment reconnect scheduled",
                         extra={
+                            "event": "broker_connect_failed",
                             "attempt": reconnect_failures,
                             "delay_seconds": delay,
                         },
@@ -484,7 +528,10 @@ async def run_worker(
                 if broker is None:
                     break
                 reconnect_failures = 0
-                logger.info("enrichment worker broker connected")
+                logger.info(
+                    "enrichment worker broker connected",
+                    extra={"event": "broker_connected"},
+                )
 
             try:
                 outcome = await _consume_connected(
@@ -501,7 +548,10 @@ async def run_worker(
             if outcome is _ConsumeOutcome.STOPPED:
                 break
 
-            logger.warning("enrichment worker broker connection lost")
+            logger.warning(
+                "enrichment worker broker connection lost",
+                extra={"event": "broker_connection_lost"},
+            )
             await broker.close()
             broker = None
             reconnect_failures = 1
@@ -513,7 +563,11 @@ async def run_worker(
             )
             logger.warning(
                 "RabbitMQ enrichment reconnect scheduled",
-                extra={"attempt": reconnect_failures, "delay_seconds": delay},
+                extra={
+                    "event": "broker_connect_failed",
+                    "attempt": reconnect_failures,
+                    "delay_seconds": delay,
+                },
             )
             if await _wait_for_stop(stop, delay):
                 break
@@ -525,8 +579,14 @@ async def run_worker(
             try:
                 await engine.dispose()
             except (SQLAlchemyError, OSError):
-                logger.error("enrichment worker database resource cleanup failed")
-            logger.info("enrichment worker stopped")
+                logger.error(
+                    "enrichment worker database resource cleanup failed",
+                    extra={"event": "enrichment_cleanup_failed"},
+                )
+            logger.info(
+                "enrichment worker stopped",
+                extra={"event": "enrichment_worker_shutdown_complete"},
+            )
 
 
 async def async_main() -> None:
@@ -543,7 +603,7 @@ async def async_main() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging("signalforge-enrichment-worker")
     asyncio.run(async_main())
 
 

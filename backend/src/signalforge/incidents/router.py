@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -21,6 +22,7 @@ from signalforge.incidents.schemas import (
 from signalforge.users.models import User, UserRole
 
 router = APIRouter(prefix="/api/v1/incidents", tags=["incidents"])
+logger = logging.getLogger(__name__)
 DatabaseSession = Annotated[AsyncSession, Depends(get_session)]
 LifecycleActor = Annotated[
     User,
@@ -39,7 +41,12 @@ async def create_incident(
     incident_data: IncidentCreate,
     session: DatabaseSession,
 ) -> IncidentResponse:
-    return await application.create_incident_with_event(session, incident_data)
+    incident = await application.create_incident_with_event(session, incident_data)
+    logger.info(
+        "incident created",
+        extra={"event": "incident_created", "incident_id": incident.id},
+    )
+    return incident
 
 
 @router.get(
