@@ -91,12 +91,14 @@ filters, server-side pagination, and URL-preserved filter and page state. On the
 detail view, viewers remain read-only; operators and admins may acknowledge open
 Incidents and resolve acknowledged Incidents. The server response supplies every
 lifecycle state and attribution update. Deterministic triage remains authoritative,
-and AI enrichment remains advisory. The read-only Remediation workspace includes
+and AI enrichment remains advisory. The Remediation workspace includes
 a URL-backed proposal queue, proposal detail, human review attribution, and
-execution status. Proposal creation,
-approval, rejection, and execution requests are not exposed in this slice. Approval
-does not automatically execute remediation: execution is a distinct controlled
-step. An unknown execution outcome remains distinct from success and failure.
+execution status. Operators and admins may create restart-service proposals.
+An admin may approve another user's pending proposal; self-approval is prohibited.
+An operator may reject only their own pending proposal, while an admin may reject
+any pending proposal. Rejection requires a reason. Approval does not execute
+remediation: execution remains a separate controlled step. An unknown execution
+outcome remains distinct from success and failure.
 
 Use Node.js 24.15.0 or a later 24.x release and npm 11.13.0 or a later 11.x
 release. Start the local backend at <http://127.0.0.1:8000> first, using the

@@ -1,11 +1,15 @@
+import { Component, signal } from '@angular/core';
+import { HttpErrorResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { NavigationEnd, provideRouter, Router } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { filter, firstValueFrom, Observable, of, Subject, take, throwError } from 'rxjs';
 import { vi } from 'vitest';
+import { AuthService } from '../../core/auth/auth.service';
+import { User, UserRole } from '../../core/models/user';
 import { RemediationApiService } from './remediation-api.service';
 import { RemediationListQuery } from './remediation-list-query';
-import { RemediationProposal, RemediationProposalListResponse } from './remediation.models';
+import { RemediationProposal, RemediationProposalCreateRequest, RemediationProposalListResponse } from './remediation.models';
 import { RemediationComponent } from './remediation.component';
 
 const id = '57ed68ac-bc67-493e-a621-f63da52d6b12';
@@ -18,15 +22,22 @@ const proposal: RemediationProposal = {
 const response = (overrides: Partial<RemediationProposalListResponse> = {}): RemediationProposalListResponse =>
   ({ items: [proposal], limit: 20, offset: 0, total: 1, ...overrides });
 
+@Component({ template: '' })
+class DetailStub {}
+
 describe('RemediationComponent', () => {
+  const currentUser = signal<User | null>(null);
+  const createProposal = vi.fn<(request: RemediationProposalCreateRequest) => Observable<RemediationProposal>>();
   const listProposals = vi.fn<(query: RemediationListQuery) => Observable<RemediationProposalListResponse>>();
   beforeEach(() => {
-    listProposals.mockReset();
+    listProposals.mockReset(); createProposal.mockReset(); currentUser.set(null);
     listProposals.mockReturnValue(of(response({ total: 201 })));
     TestBed.configureTestingModule({
       providers: [
-        provideRouter([{ path: 'remediation', component: RemediationComponent }]),
-        { provide: RemediationApiService, useValue: { listProposals } },
+        provideRouter([{ path: 'remediation', component: RemediationComponent },
+          { path: 'remediation/:proposalId', component: DetailStub }]),
+        { provide: RemediationApiService, useValue: { listProposals, createProposal } },
+        { provide: AuthService, useValue: { currentUser } },
       ],
     });
   });
@@ -43,6 +54,99 @@ describe('RemediationComponent', () => {
     action();
     await completed;
   }
+
+  function asRole(role: UserRole, userId = id): void {
+    currentUser.set({ id: userId, email: 'user@example.test', role, is_active: true,
+      created_at: proposal.created_at, updated_at: proposal.updated_at });
+  }
+  const httpError = (status: number, detail?: string) => new HttpErrorResponse({
+    status, error: detail === undefined ? {} : { detail },
+  });
+
+  it.each(['viewer', 'operator', 'admin'] as const)('shows creation only to allowed role %s', async (role) => {
+    asRole(role);
+    const { harness } = await open();
+    const button = [...(harness.routeNativeElement?.querySelectorAll('button') ?? [])]
+      .find((item) => item.textContent?.includes('New remediation proposal'));
+    expect(!!button).toBe(role !== 'viewer');
+  });
+
+  it('validates create fields, trims input, fixes action, and prevents duplicate POST', async () => {
+    asRole('operator');
+    const pending = new Subject<RemediationProposal>();
+    createProposal.mockReturnValue(pending);
+    const { harness, component } = await open();
+    component.openCreate();
+    component.createForm.patchValue({ incidentId: 'bad', target: 'Payments API', reason: '  ' });
+    component.submitCreate();
+    expect(component.createIncidentError()).toContain('UUID');
+    expect(component.createTargetError()).toContain('lowercase');
+    expect(component.createReasonError()).toContain('reason');
+    expect(createProposal).not.toHaveBeenCalled();
+    for (const target of ['', 'bad/path', 'bad?query', '.bad', 'ok\n', 'x'.repeat(101)]) {
+      component.createForm.patchValue({ incidentId: id, target, reason: 'valid' });
+      component.submitCreate();
+      expect(createProposal).not.toHaveBeenCalled();
+    }
+    component.createForm.patchValue({ target: '  billing.worker  ', reason: '  restart needed  ' });
+    component.submitCreate(); component.submitCreate();
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal).toHaveBeenCalledWith({ incident_id: id, action_kind: 'restart_service',
+      target: 'billing.worker', reason: 'restart needed' });
+    expect(component.createState()).toBe('creating');
+    harness.detectChanges();
+    expect(harness.routeNativeElement?.textContent).toContain('Creating proposal');
+    expect(component.response()?.items).toEqual([proposal]);
+  });
+
+  it('blocks a reason over 1000 trimmed characters and retains the form', async () => {
+    asRole('admin');
+    const { component } = await open(); component.openCreate();
+    component.createForm.setValue({ incidentId: id, target: 'orders_v2', reason: 'x'.repeat(1001) });
+    component.submitCreate();
+    expect(component.createReasonError()).toContain('1000');
+    expect(component.createForm.controls.reason.value).toHaveLength(1001);
+    expect(createProposal).not.toHaveBeenCalled();
+  });
+
+  it('cancels a clean create form without HTTP', async () => {
+    asRole('admin');
+    const { component } = await open();
+    component.openCreate(); component.createForm.patchValue({ incidentId: 'bad' });
+    component.submitCreate(); component.cancelCreate();
+    expect(component.createOpen()).toBe(false);
+    expect(component.createForm.getRawValue()).toEqual({ incidentId: '', target: '', reason: '' });
+    expect(component.createIncidentError()).toBeNull();
+    expect(createProposal).not.toHaveBeenCalled();
+  });
+
+  it('navigates to the returned ID with queue parameters after creation', async () => {
+    asRole('admin');
+    createProposal.mockReturnValue(of({ ...proposal, id: '79caa2b3-59e2-4187-953c-e590a68aab2a' }));
+    const { component, router } = await open('/remediation?status=approved&limit=50');
+    component.openCreate(); component.createForm.setValue({ incidentId: id, target: 'payments-api', reason: 'Restart' });
+    await navigateWith(() => component.submitCreate(), router);
+    expect(router.url).toBe('/remediation/79caa2b3-59e2-4187-953c-e590a68aab2a?status=approved&limit=50');
+  });
+
+  it.each([
+    [404, 'Incident not found', 'Incident not found.'],
+    [409, 'Incident is not eligible for remediation', 'This incident is not eligible for remediation.'],
+    [409, 'A matching pending remediation proposal already exists', 'A matching pending remediation proposal already exists.'],
+    [409, 'private detail', 'Proposal could not be created because the current server state does not allow it.'],
+    [403, 'private detail', 'You do not have permission to create remediation proposals.'],
+    [500, 'private detail', 'Remediation proposal could not be created. Try again.'],
+  ] as const)('maps create %s safely', async (status, detail, feedback) => {
+    asRole('operator');
+    createProposal.mockReturnValue(throwError(() => httpError(status, detail)));
+    const { harness, component, router } = await open();
+    component.openCreate(); component.createForm.setValue({ incidentId: id, target: 'payments-api', reason: 'Restart' });
+    component.submitCreate(); harness.detectChanges();
+    expect(component.createFeedback()).toBe(feedback);
+    expect(component.createForm.controls.reason.value).toBe('Restart');
+    expect(router.url).toBe('/remediation');
+    expect(harness.routeNativeElement?.textContent).not.toContain('private detail');
+  });
 
   it('restores URL filters and links proposal detail with current query parameters', async () => {
     const { harness, component } = await open('/remediation?status=pending_approval&limit=50&offset=100');

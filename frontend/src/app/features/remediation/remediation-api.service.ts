@@ -2,7 +2,8 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { RemediationListQuery } from './remediation-list-query';
-import { RemediationExecution, RemediationProposal, RemediationProposalListResponse } from './remediation.models';
+import { RemediationExecution, RemediationProposal, RemediationProposalCreateRequest,
+  RemediationProposalListResponse, RemediationProposalRejectRequest } from './remediation.models';
 
 @Injectable({ providedIn: 'root' })
 export class RemediationApiService {
@@ -22,6 +23,18 @@ export class RemediationApiService {
 
   getProposal(proposalId: string): Observable<RemediationProposal> {
     return this.http.get<RemediationProposal>(`/api/v1/remediation-proposals/${proposalId}`);
+  }
+
+  createProposal(request: RemediationProposalCreateRequest): Observable<RemediationProposal> {
+    return this.http.post<RemediationProposal>('/api/v1/remediation-proposals', request);
+  }
+
+  approveProposal(proposalId: string): Observable<RemediationProposal> {
+    return this.http.post<RemediationProposal>(`/api/v1/remediation-proposals/${proposalId}/approve`, null);
+  }
+
+  rejectProposal(proposalId: string, request: RemediationProposalRejectRequest): Observable<RemediationProposal> {
+    return this.http.post<RemediationProposal>(`/api/v1/remediation-proposals/${proposalId}/reject`, request);
   }
 
   getExecution(proposalId: string): Observable<RemediationExecution> {

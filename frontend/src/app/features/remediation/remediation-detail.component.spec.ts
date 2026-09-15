@@ -1,9 +1,12 @@
 import { HttpErrorResponse } from '@angular/common/http';
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, of, Subject, throwError } from 'rxjs';
 import { vi } from 'vitest';
+import { AuthService } from '../../core/auth/auth.service';
+import { User, UserRole } from '../../core/models/user';
 import { RemediationApiService } from './remediation-api.service';
 import { RemediationDetailComponent } from './remediation-detail.component';
 import { RemediationExecution, RemediationExecutionStatus, RemediationProposal, RemediationProposalStatus } from './remediation.models';
@@ -34,16 +37,21 @@ function execution(status: RemediationExecutionStatus): RemediationExecution {
 const notFound = () => new HttpErrorResponse({ status: 404, statusText: 'Not found' });
 
 describe('RemediationDetailComponent', () => {
+  const currentUser = signal<User | null>(null);
+  const approveProposal = vi.fn<(id: string) => Observable<RemediationProposal>>();
+  const rejectProposal = vi.fn<(id: string, body: { rejection_reason: string }) => Observable<RemediationProposal>>();
   const getProposal = vi.fn<(id: string) => Observable<RemediationProposal>>();
   const getExecution = vi.fn<(id: string) => Observable<RemediationExecution>>();
   beforeEach(() => {
-    getProposal.mockReset(); getExecution.mockReset();
+    getProposal.mockReset(); getExecution.mockReset(); approveProposal.mockReset();
+    rejectProposal.mockReset(); currentUser.set(null);
     getProposal.mockReturnValue(of(proposal('pending_approval')));
     getExecution.mockReturnValue(of(execution('requested')));
     TestBed.configureTestingModule({
       providers: [
         provideRouter([{ path: 'remediation/:proposalId', component: RemediationDetailComponent }]),
-        { provide: RemediationApiService, useValue: { getProposal, getExecution } },
+        { provide: RemediationApiService, useValue: { getProposal, getExecution, approveProposal, rejectProposal } },
+        { provide: AuthService, useValue: { currentUser } },
       ],
     });
   });
@@ -53,6 +61,209 @@ describe('RemediationDetailComponent', () => {
     const component = harness.routeDebugElement?.componentInstance as RemediationDetailComponent;
     return { harness, component, router: TestBed.inject(Router) };
   }
+
+  function asRole(role: UserRole, userId = id): void {
+    currentUser.set({ id: userId, email: 'user@example.test', role, is_active: true,
+      created_at: date, updated_at: date });
+  }
+  const httpError = (status: number, detail?: string) => new HttpErrorResponse({
+    status, error: detail === undefined ? {} : { detail },
+  });
+
+  it.each([
+    ['viewer', id, false, false],
+    ['operator', otherId, false, true],
+    ['operator', id, false, false],
+    ['admin', otherId, false, true],
+    ['admin', id, true, true],
+  ] as const)('applies pending decision roles: %s %s', async (role, userId, approve, reject) => {
+    asRole(role, userId);
+    const { harness } = await open();
+    const buttons = [...(harness.routeNativeElement?.querySelectorAll('button') ?? [])]
+      .map((button) => button.textContent?.trim());
+    expect(buttons.includes('Approve')).toBe(approve);
+    expect(buttons.includes('Reject')).toBe(reject);
+    const text = harness.routeNativeElement?.textContent ?? '';
+    if (role === 'admin' && userId === otherId) expect(text).toContain('A proposer cannot approve their own');
+    if (role === 'operator' && userId === id) expect(text).toContain('Only an administrator can decide');
+  });
+
+  it.each([
+    ['approved', 'viewer'], ['approved', 'operator'], ['approved', 'admin'],
+    ['rejected', 'viewer'], ['rejected', 'operator'], ['rejected', 'admin'],
+  ] as const)('shows no decision controls for %s to %s', async (status, role) => {
+    asRole(role); getProposal.mockReturnValue(of(proposal(status)));
+    const { harness } = await open();
+    const buttons = [...(harness.routeNativeElement?.querySelectorAll('button') ?? [])]
+      .map((button) => button.textContent?.trim());
+    expect(buttons).not.toContain('Approve');
+    expect(buttons).not.toContain('Reject');
+  });
+
+  it('confirms approval once, retains pending until response, and reads execution after success', async () => {
+    asRole('admin');
+    const pending = new Subject<RemediationProposal>();
+    approveProposal.mockReturnValue(pending);
+    getExecution.mockReturnValue(throwError(() => httpError(404)));
+    const { harness, component } = await open();
+    component.openApproval(); harness.detectChanges();
+    expect(harness.routeNativeElement?.textContent).toContain('Approval allows an authorized execution request');
+    component.cancelDecision(); expect(approveProposal).not.toHaveBeenCalled();
+    component.openApproval(); component.confirmApproval(); component.confirmApproval();
+    expect(approveProposal).toHaveBeenCalledTimes(1);
+    expect(component.mutationState()).toBe('approving');
+    expect(component.proposal()?.status).toBe('pending_approval');
+    harness.detectChanges();
+    expect(harness.routeNativeElement?.textContent).toContain('Approving proposal');
+    expect(harness.routeNativeElement?.querySelector('nav button')?.hasAttribute('disabled')).toBe(true);
+    const approved = proposal('approved', { approved_by_user_id: id });
+    pending.next(approved); pending.complete(); harness.detectChanges();
+    expect(component.proposal()).toEqual(approved);
+    expect(harness.routeNativeElement?.textContent).toContain('Approved by user ID');
+    expect(harness.routeNativeElement?.textContent).toContain('Remediation proposal approved.');
+    expect(harness.routeNativeElement?.textContent).toContain('No execution has been requested');
+    expect(getExecution).toHaveBeenCalledTimes(1);
+    expect(approveProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates rejection, trims reason, keeps it after error and renders backend metadata', async () => {
+    asRole('operator', otherId);
+    const pending = new Subject<RemediationProposal>(); rejectProposal.mockReturnValue(pending);
+    const { harness, component } = await open();
+    component.openRejection(); component.confirmRejection();
+    expect(component.rejectionError()).toContain('reason');
+    component.rejectionForm.controls.reason.setValue('x'.repeat(1001)); component.confirmRejection();
+    expect(component.rejectionError()).toContain('1000');
+    component.cancelDecision(); expect(rejectProposal).not.toHaveBeenCalled();
+    component.openRejection(); component.rejectionForm.controls.reason.setValue('  unsafe target  ');
+    component.confirmRejection(); component.confirmRejection();
+    expect(rejectProposal).toHaveBeenCalledTimes(1);
+    expect(rejectProposal).toHaveBeenCalledWith(id, { rejection_reason: 'unsafe target' });
+    expect(component.proposal()?.status).toBe('pending_approval');
+    expect(component.mutationState()).toBe('rejecting');
+    harness.detectChanges(); expect(harness.routeNativeElement?.textContent).toContain('Rejecting proposal');
+    pending.error(new Error('private detail')); harness.detectChanges();
+    expect(component.rejectionForm.controls.reason.value).toBe('  unsafe target  ');
+    expect(component.decisionFeedback()).toContain('could not be rejected');
+    rejectProposal.mockReturnValue(of(proposal('rejected'))); component.confirmRejection(); harness.detectChanges();
+    expect(component.proposal()?.status).toBe('rejected');
+    expect(component.decisionFeedback()).toBe('Remediation proposal rejected.');
+    expect(harness.routeNativeElement?.textContent).toContain('Rejected by user ID');
+    expect(harness.routeNativeElement?.querySelector('b')).toBeNull();
+    expect(getExecution).not.toHaveBeenCalled();
+  });
+
+  it.each(['approving', 'rejecting'] as const)('reloads authoritative state after %s transition conflict', async (kind) => {
+    asRole('admin');
+    getProposal.mockReturnValueOnce(of(proposal('pending_approval')))
+      .mockReturnValueOnce(of(proposal('approved')));
+    getExecution.mockReturnValue(throwError(() => httpError(404)));
+    if (kind === 'approving') approveProposal.mockReturnValue(throwError(() =>
+      httpError(409, 'Invalid remediation proposal state transition')));
+    else rejectProposal.mockReturnValue(throwError(() =>
+      httpError(409, 'Invalid remediation proposal state transition')));
+    const { harness, component } = await open();
+    if (kind === 'approving') { component.openApproval(); component.confirmApproval(); }
+    else { component.openRejection(); component.rejectionForm.controls.reason.setValue('No'); component.confirmRejection(); }
+    harness.detectChanges();
+    expect(component.proposal()?.status).toBe('approved');
+    expect(component.decisionFeedback()).toContain('Proposal state changed before this decision completed');
+    expect(getProposal).toHaveBeenCalledTimes(2);
+    expect(getExecution).toHaveBeenCalledTimes(1);
+    expect(kind === 'approving' ? approveProposal : rejectProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps self-approval, permission, missing and generic decision errors safely', async () => {
+    asRole('admin');
+    approveProposal.mockReturnValueOnce(throwError(() =>
+      httpError(409, 'A proposer cannot approve their own remediation proposal')))
+      .mockReturnValueOnce(throwError(() => httpError(403, 'private detail')))
+      .mockReturnValueOnce(throwError(() => new Error('private detail')))
+      .mockReturnValueOnce(throwError(() => httpError(404)));
+    const { harness, component } = await open();
+    component.openApproval(); component.confirmApproval();
+    expect(component.decisionFeedback()).toContain('You cannot approve');
+    expect(component.proposal()?.status).toBe('pending_approval');
+    component.confirmApproval(); expect(component.decisionFeedback()).toContain('do not have permission');
+    component.confirmApproval(); expect(component.decisionFeedback()).toContain('could not be approved');
+    component.confirmApproval(); harness.detectChanges();
+    expect(component.proposalState()).toBe('not-found');
+    expect(harness.routeNativeElement?.textContent).toContain('Remediation proposal not found.');
+    expect(harness.routeNativeElement?.textContent).not.toContain('private detail');
+    expect(approveProposal).toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps the user session and pending proposal after rejection 403, then handles 404', async () => {
+    asRole('operator', otherId);
+    rejectProposal.mockReturnValueOnce(throwError(() => httpError(403, 'private detail')))
+      .mockReturnValueOnce(throwError(() => httpError(404, 'private detail')));
+    const { harness, component } = await open();
+    component.openRejection(); component.rejectionForm.controls.reason.setValue('  reason  ');
+    component.confirmRejection(); harness.detectChanges();
+    expect(component.decisionFeedback()).toContain('do not have permission');
+    expect(component.proposal()?.status).toBe('pending_approval');
+    expect(currentUser()?.role).toBe('operator');
+    expect(component.rejectionForm.controls.reason.value).toBe('  reason  ');
+    component.confirmRejection(); harness.detectChanges();
+    expect(component.proposalState()).toBe('not-found');
+    expect(rejectProposal).toHaveBeenCalledTimes(2);
+    expect(harness.routeNativeElement?.textContent).not.toContain('private detail');
+  });
+
+  it('clears confirmation on Refresh and reloads current proposal', async () => {
+    asRole('admin');
+    const { component } = await open();
+    component.openApproval(); expect(component.decisionMode()).toBe('confirm-approval');
+    component.refresh();
+    expect(component.decisionMode()).toBe('idle');
+    expect(getProposal).toHaveBeenCalledTimes(2);
+    expect(approveProposal).not.toHaveBeenCalled();
+    component.openRejection(); component.rejectionForm.controls.reason.setValue('No');
+    component.refresh();
+    expect(component.decisionMode()).toBe('idle');
+    expect(component.rejectionForm.controls.reason.value).toBe('');
+  });
+
+  it('discards stale post-approval execution read after route navigation', async () => {
+    asRole('admin');
+    const executionRead = new Subject<RemediationExecution>();
+    getExecution.mockReturnValue(executionRead);
+    approveProposal.mockReturnValue(of(proposal('approved', { approved_by_user_id: id })));
+    getProposal.mockImplementation((proposalId) => of(proposal('pending_approval', {
+      id: proposalId, target: proposalId === id ? 'payments-api' : 'new-target',
+    })));
+    const { component, router } = await open();
+    component.openApproval(); component.confirmApproval();
+    expect(component.executionState()).toBe('loading');
+    await router.navigateByUrl(`/remediation/${otherId}`);
+    executionRead.next(execution('requested'));
+    expect(component.proposal()?.id).toBe(otherId);
+    expect(component.execution()).toBeNull();
+    expect(component.executionState()).toBe('not-applicable');
+  });
+
+  it('discards late A mutation after A to B and A to B to A route changes', async () => {
+    asRole('admin');
+    const first = new Subject<RemediationProposal>();
+    approveProposal.mockReturnValue(first);
+    getProposal.mockImplementation((proposalId) => of(proposal('pending_approval', {
+      id: proposalId, target: proposalId === id ? 'payments-api' : 'new-target',
+    })));
+    const { component, router } = await open();
+    component.openApproval(); component.confirmApproval();
+    await router.navigateByUrl(`/remediation/${otherId}`);
+    first.next(proposal('approved')); first.complete();
+    expect(component.proposal()?.id).toBe(otherId);
+    expect(component.proposal()?.status).toBe('pending_approval');
+    await router.navigateByUrl(`/remediation/${id}`);
+    const second = new Subject<RemediationProposal>(); approveProposal.mockReturnValue(second);
+    component.openApproval(); component.confirmApproval();
+    await router.navigateByUrl(`/remediation/${otherId}`);
+    await router.navigateByUrl(`/remediation/${id}`);
+    second.next(proposal('approved')); second.complete();
+    expect(component.proposal()?.status).toBe('pending_approval');
+    expect(getExecution).not.toHaveBeenCalled();
+  });
 
   it('rejects malformed proposal UUID before any HTTP call and provides Back', async () => {
     const { harness } = await open('/remediation/not-an-id');

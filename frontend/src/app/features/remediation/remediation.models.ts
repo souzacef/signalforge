@@ -3,6 +3,17 @@ export type RemediationProposalStatus = 'pending_approval' | 'approved' | 'rejec
 export type RemediationExecutionStatus =
   | 'requested' | 'in_progress' | 'succeeded' | 'failed' | 'outcome_unknown';
 
+export interface RemediationProposalCreateRequest {
+  incident_id: string;
+  action_kind: RemediationActionKind;
+  target: string;
+  reason: string;
+}
+
+export interface RemediationProposalRejectRequest {
+  rejection_reason: string;
+}
+
 export interface RemediationProposal {
   id: string;
   incident_id: string;
