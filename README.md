@@ -11,9 +11,11 @@ development straightforward while domain boundaries are still emerging, without
 preventing modules from being separated later when real operational needs justify
 it.
 
-The Angular frontend now provides an authentication and operator-console shell
-foundation. Incident, triage, and remediation data views remain later Phase 6 work.
-RAG, Kubernetes, Helm, Terraform, and AWS are planned directions.
+The Angular frontend now provides authentication, an operator-console shell,
+and a read-only Incident list with server-side filters and pagination. Incident
+list filters and page position are preserved in the URL. Incident detail, triage,
+lifecycle actions, and remediation data views remain later Phase 6 work. RAG,
+Kubernetes, Helm, Terraform, and AWS are planned directions.
 
 ## Prerequisites
 
@@ -77,10 +79,11 @@ for local iteration.
 
 ## Frontend development
 
-The Phase 6a Angular application lives in `frontend/`. It provides login,
-session restoration, protected navigation, identity display, and logout. The
-Incidents and Remediation pages are placeholders; later Phase 6 slices will add
-operational data.
+The Phase 6 Angular application lives in `frontend/`. It provides login,
+session restoration, protected navigation, identity display, logout, and an
+authenticated Incident list. The Incident view supports all backend list filters,
+server-side pagination, and URL-preserved filter and page state. Remediation
+remains a placeholder; later Phase 6 slices will add Incident detail and actions.
 
 Use Node.js 24.15.0 or a later 24.x release and npm 11.13.0 or a later 11.x
 release. Start the local backend at <http://127.0.0.1:8000> first, using the

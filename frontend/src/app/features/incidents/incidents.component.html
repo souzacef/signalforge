@@ -1,0 +1,200 @@
+<section class="incidents-page" aria-labelledby="incidents-title">
+  <header class="page-heading">
+    <div>
+      <p class="eyebrow">Operations / Incident queue</p>
+      <h1 id="incidents-title">Incidents</h1>
+      <p>Review reported incidents across connected sources. Newest occurrences appear first.</p>
+    </div>
+  </header>
+
+  <form
+    class="filter-panel"
+    [formGroup]="filterForm"
+    (ngSubmit)="applyFilters()"
+    aria-labelledby="filter-heading"
+    novalidate
+  >
+    <div class="filter-heading">
+      <div>
+        <h2 id="filter-heading">Filter incidents</h2>
+        <p>Choose criteria, then apply them to the queue.</p>
+      </div>
+      @if (hasActiveFilters()) {
+        <span class="active-filter-mark">Filtered view</span>
+      }
+    </div>
+
+    <div class="filter-grid">
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Status</mat-label>
+        <mat-select formControlName="status">
+          <mat-option [value]="null">Any status</mat-option>
+          @for (status of statuses; track status.value) {
+            <mat-option [value]="status.value">{{ status.label }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Severity</mat-label>
+        <mat-select formControlName="severity">
+          <mat-option [value]="null">Any severity</mat-option>
+          @for (severity of severities; track severity.value) {
+            <mat-option [value]="severity.value">{{ severity.label }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Source</mat-label>
+        <input
+          matInput
+          formControlName="source"
+          autocomplete="off"
+          aria-describedby="source-hint"
+        />
+        <mat-hint id="source-hint">Exact source</mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Occurred from</mat-label>
+        <input
+          matInput
+          type="datetime-local"
+          step="0.001"
+          formControlName="occurredFrom"
+          [attr.aria-describedby]="dateRangeError() ? 'date-range-error' : null"
+          [attr.aria-invalid]="dateRangeError() ? 'true' : null"
+        />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Occurred to</mat-label>
+        <input
+          matInput
+          type="datetime-local"
+          step="0.001"
+          formControlName="occurredTo"
+          [attr.aria-describedby]="dateRangeError() ? 'date-range-error' : null"
+          [attr.aria-invalid]="dateRangeError() ? 'true' : null"
+        />
+      </mat-form-field>
+    </div>
+
+    @if (dateRangeError(); as message) {
+      <p id="date-range-error" class="validation-error" role="alert">{{ message }}</p>
+    }
+
+    <div class="filter-actions">
+      <button mat-flat-button type="submit">Apply filters</button>
+      <button mat-button type="button" (click)="clearFilters()">Clear filters</button>
+    </div>
+  </form>
+
+  <section class="list-panel" aria-labelledby="queue-heading" [attr.aria-busy]="loading()">
+    <div class="list-heading">
+      <div>
+        <h2 id="queue-heading">Incident queue</h2>
+        <p class="range-summary">Newest occurrences first</p>
+      </div>
+    </div>
+
+    @if (loading()) {
+      <div class="loading-state" role="status" aria-live="polite">
+        <mat-progress-bar mode="indeterminate" />
+        <p>Loading incidents…</p>
+      </div>
+    } @else if (loadError()) {
+      <div class="message-state error-state" role="alert">
+        <span class="state-symbol" aria-hidden="true">!</span>
+        <div>
+          <h3>Incidents could not be loaded.</h3>
+          <p>Check the connection and try the current view again.</p>
+          <button mat-stroked-button type="button" (click)="retry()">Retry</button>
+        </div>
+      </div>
+    } @else if (response(); as result) {
+      @if (result.total === 0) {
+        <div class="message-state empty-state">
+          <span class="state-symbol" aria-hidden="true">○</span>
+          <div>
+            @if (hasActiveFilters()) {
+              <h3>No incidents match the selected filters.</h3>
+              <p>Adjust the filter criteria or return to the complete incident queue.</p>
+              <button mat-stroked-button type="button" (click)="clearFilters()">
+                Clear filters
+              </button>
+            } @else {
+              <h3>No incident records are currently available.</h3>
+              <p>New incident records will appear here when they are reported.</p>
+            }
+          </div>
+        </div>
+      } @else {
+        <div class="table-scroll">
+          <table mat-table [dataSource]="result.items" aria-label="Incidents">
+            <ng-container matColumnDef="severity">
+              <th mat-header-cell *matHeaderCellDef>Severity</th>
+              <td mat-cell *matCellDef="let incident">
+                <span
+                  class="severity-badge"
+                  [class]="'severity-badge severity-' + incident.severity"
+                >
+                  {{ severityLabel(incident.severity) }}
+                </span>
+              </td>
+            </ng-container>
+
+            <ng-container matColumnDef="incident">
+              <th mat-header-cell *matHeaderCellDef>Incident</th>
+              <td mat-cell *matCellDef="let incident">
+                <strong class="incident-title">{{ incident.title }}</strong>
+              </td>
+            </ng-container>
+
+            <ng-container matColumnDef="source">
+              <th mat-header-cell *matHeaderCellDef>Source</th>
+              <td mat-cell *matCellDef="let incident">
+                <span class="source-value">{{ incident.source }}</span>
+              </td>
+            </ng-container>
+
+            <ng-container matColumnDef="status">
+              <th mat-header-cell *matHeaderCellDef>Status</th>
+              <td mat-cell *matCellDef="let incident">
+                <span class="status-badge" [class]="'status-badge status-' + incident.status">
+                  {{ statusLabel(incident.status) }}
+                </span>
+              </td>
+            </ng-container>
+
+            <ng-container matColumnDef="occurred">
+              <th mat-header-cell *matHeaderCellDef>Occurred</th>
+              <td mat-cell *matCellDef="let incident">
+                <time [attr.datetime]="incident.occurred_at" [attr.title]="incident.occurred_at">
+                  {{ incident.occurred_at | date: 'medium' }}
+                </time>
+              </td>
+            </ng-container>
+
+            <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+            <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+          </table>
+        </div>
+      }
+
+      <div class="pagination-row">
+        <span class="range-summary" aria-live="polite">{{ rangeSummary(result) }}</span>
+        <mat-paginator
+          aria-label="Incident list pagination"
+          [length]="result.total"
+          [pageIndex]="query().offset / query().limit"
+          [pageSize]="query().limit"
+          [pageSizeOptions]="pageSizes"
+          [showFirstLastButtons]="true"
+          (page)="changePage($event)"
+        />
+      </div>
+    }
+  </section>
+</section>
