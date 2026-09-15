@@ -268,7 +268,9 @@ podman compose --profile remediation up -d remediation-worker
 Use the example allowlist above only as a format example, not as a production
 endpoint. Ordinary `podman compose up -d` neither requires an allowlist nor starts
 the remediation worker, so the default stack causes no remediation side effects.
-Phase 5e will add remediation metrics, tracing, and dashboard coverage.
+The opt-in worker exposes process-local metrics and can emit OpenTelemetry spans
+when tracing is enabled. Enabling the observability profile does not activate the
+remediation worker or make remediation automatic.
 
 Successful new Incident creation atomically commits the Incident and one durable
 `incident.created` v1 outbox intent in PostgreSQL. The intent stores an immutable
@@ -495,12 +497,30 @@ reflect publication, retry, invalid event, lost ownership, ambiguous publication
 database failure, or release. Unknown outbox event types use a fixed `unknown`
 label. IDs, payloads, error strings, and Incident data are not metric labels.
 
+The remediation worker records
+`signalforge_remediation_messages_total{result}`. Its bounded outcomes are
+`processed` for normal durable processing, `duplicate` for idempotent redelivery,
+`rejected` for a terminal invalid event, `requeued` for database-related
+redelivery, and `in_progress` when a durable attempt is still active and
+consumption backs off. `in_progress` is not an actuator retry.
+
+External executor calls record
+`signalforge_remediation_executor_calls_total{result}` and
+`signalforge_remediation_executor_duration_seconds{result}`. Their bounded
+outcomes are `success`, `target_not_allowed`, `unsupported_action`,
+`http_rejected`, `http_server_error`, `timeout`, `transport`, `interrupted`, and
+`unexpected`. Executor `success` means the external actuator call succeeded; it
+does not guarantee that the later database persistence transaction succeeded.
+All remediation labels are code-owned and bounded. IDs, target names, endpoints,
+users, and error text are never labels.
+
 Every registry is process-local and metrics are not persisted. Local Compose
 publishes these exposition-only worker targets on localhost:
 
 - `http://127.0.0.1:9101/metrics` — dispatcher
 - `http://127.0.0.1:9102/metrics` — Incident consumer
 - `http://127.0.0.1:9103/metrics` — enrichment worker in the `ai` profile
+- `http://127.0.0.1:9104/metrics` — remediation worker in the `remediation` profile
 
 Each endpoint exposes only its owning process's explicit registry, with no default
 Python, GC, or process collectors. The worker servers provide Prometheus
@@ -516,10 +536,11 @@ restrict scrape network access.
 ## Distributed tracing
 
 SignalForge has explicit OpenTelemetry runtimes for the API, dispatcher, Incident
-consumer, and enrichment worker, with fixed resource identities
-`signalforge-api`, `signalforge-dispatcher`, `signalforge-incident-consumer`, and
-`signalforge-enrichment-worker`. Tracing is disabled by default and requires no
-collector in that state. All runtimes use `SIGNALFORGE_TRACING_ENABLED`, the full
+consumer, enrichment worker, and remediation worker, with fixed resource identities
+`signalforge-api`, `signalforge-dispatcher`, `signalforge-incident-consumer`,
+`signalforge-enrichment-worker`, and `signalforge-remediation-worker`. Tracing is
+disabled by default and requires no collector in that state. All runtimes use
+`SIGNALFORGE_TRACING_ENABLED`, the full
 OTLP/HTTP protobuf endpoint in `SIGNALFORGE_OTLP_TRACES_ENDPOINT`, and the root
 sampling ratio from `0.0` to `1.0` in `SIGNALFORGE_TRACING_SAMPLE_RATIO` (default
 `1.0`). Each process owns an isolated provider and shuts it down with its existing
@@ -551,6 +572,21 @@ safe operation name, the OpenTelemetry provider identity `gcp.gemini`, the
 configured bounded model name, and JSON output type. SignalForge's persisted
 provider identity remains `gemini`.
 
+Remediation has a separate distributed lineage. Approval alone does not create
+it; the explicit admin execute command does:
+
+```text
+Admin execute API SERVER span
+  -> durable remediation.execution.requested outbox context
+  -> RabbitMQ PRODUCER span and W3C headers
+  -> remediation CONSUMER PROCESS span
+  -> actuator HTTP CLIENT span, only when an actual allowlisted call occurs
+```
+
+Duplicate, rejected, and in-progress deliveries can produce PROCESS spans without
+an actuator CLIENT child. Actuator span attributes exclude endpoint URLs, targets,
+proposal and execution IDs, credentials, bodies, and idempotency keys.
+
 SignalForge does not export prompts, system instructions, Incident content,
 model responses, parsed enrichment results, API keys, HTTP headers, or endpoint
 URLs in span names, attributes, events, or status descriptions. The narrow local
@@ -568,9 +604,9 @@ At-least-once delivery also applies to telemetry: each publication attempt and
 each delivery or redelivery creates a separate span. Producer retries are siblings
 under the original durable causal parent, duplicate deliveries still produce
 PROCESS spans, and no exactly-once tracing guarantee is made. Remediation tracing
-is outside the current path. The optional local observability profile described
-below provides the Collector, Tempo, Prometheus, and Grafana; Jaeger is not part
-of the stack.
+follows the same at-least-once telemetry behavior. The optional local observability
+profile described below provides the Collector, Tempo, Prometheus, and Grafana;
+Jaeger is not part of the stack.
 
 ## Local observability
 
@@ -594,10 +630,22 @@ SIGNALFORGE_TRACING_ENABLED=true \
   podman compose --profile observability --profile ai up -d
 ```
 
+Add the opt-in remediation worker by combining the observability and remediation
+profiles. The allowlist below demonstrates the configuration format only;
+`control-plane.internal` is not a live service supplied by this stack:
+
+```sh
+SIGNALFORGE_TRACING_ENABLED=true \
+SIGNALFORGE_REMEDIATION_RESTART_ENDPOINTS='{"checkout-api":"http://control-plane.internal/restart/checkout"}' \
+  podman compose --profile observability --profile remediation up -d
+```
+
 Docker Compose uses the same profile names and command structure; replace
-`podman compose` with `docker compose`. Prometheus always includes the
-`signalforge-enrichment-worker` scrape target. It is expected to show `DOWN`
-when the `ai` profile is not running.
+`podman compose` with `docker compose`. Prometheus always includes static scrape
+targets for both optional workers. The `signalforge-enrichment-worker` target is
+expected to show `DOWN` when the `ai` profile is off, and the
+`signalforge-remediation-worker` target is expected to show `DOWN` when the
+`remediation` profile is off. Neither state indicates a core-stack failure.
 
 The local endpoints are:
 
@@ -612,8 +660,10 @@ localhost development only. Prometheus is provisioned as Grafana's default data
 source, and Tempo is provisioned for trace search and span-tree inspection in
 Explore. Open Grafana, then **Dashboards → SignalForge → SignalForge Overview**.
 Its overview, API, event-pipeline, and optional AI rows use Prometheus; its recent
-and error-trace tables use Tempo. Select a trace ID to inspect the distributed
-span tree in Explore. Traces require `SIGNALFORGE_TRACING_ENABLED=true`; the
+and error-trace tables use Tempo. Its optional remediation row combines message
+and executor metrics with recent remediation trace discovery. Select a trace ID
+to inspect the distributed span tree in Explore. Traces require
+`SIGNALFORGE_TRACING_ENABLED=true`; the
 complete AI path also requires `--profile ai` and a real
 `SIGNALFORGE_GEMINI_API_KEY`. The AI panels can show no data while that profile
 is off. No alerts, trace-to-logs links, or exemplar links are provisioned.

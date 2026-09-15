@@ -25,8 +25,8 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Scrape status · AI worker optional",
-      "description": "Core jobs should be UP. The enrichment worker is intentionally DOWN when the ai profile is disabled.",
+      "title": "Scrape status · optional workers noted",
+      "description": "Core services should be UP. Optional: signalforge-enrichment-worker may be DOWN when `ai` is disabled; signalforge-remediation-worker may be DOWN when `remediation` is disabled.",
       "gridPos": {
         "x": 0,
         "y": 1,
@@ -44,7 +44,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "up{job=~\"signalforge-(api|dispatcher|incident-consumer|enrichment-worker)\"}",
+          "expr": "up{job=~\"signalforge-(api|dispatcher|incident-consumer|enrichment-worker|remediation-worker)\"}",
           "legendFormat": "{{job}}",
           "instant": true,
           "range": false
@@ -737,9 +737,9 @@
       }
     },
     {
-      "id": 14,
+      "id": 17,
       "type": "row",
-      "title": "Distributed traces",
+      "title": "Remediation · optional",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -750,13 +750,292 @@
       "panels": []
     },
     {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Remediation message outcomes",
+      "description": "Requires the remediation profile. processed = normal durable processing; duplicate = idempotent redelivery; rejected = terminal invalid event; requeued = database-related redelivery; in_progress = a durable attempt is still active and consumption backed off, not an actuator retry.",
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (result) (rate(signalforge_remediation_messages_total[$__rate_interval]))",
+          "legendFormat": "{{result}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Remediation executor outcomes",
+      "description": "External executor-call outcomes. success means the actuator call succeeded; it does not guarantee the later database persistence transaction succeeded. No data before executor calls is normal.",
+      "gridPos": {
+        "x": 12,
+        "y": 58,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (result) (rate(signalforge_remediation_executor_calls_total[$__rate_interval]))",
+          "legendFormat": "{{result}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Remediation executor latency · p50 / p95",
+      "description": "Latency across all external executor-call outcomes. No data before executor calls is normal.",
+      "gridPos": {
+        "x": 0,
+        "y": 66,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(signalforge_remediation_executor_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(signalforge_remediation_executor_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "table",
+      "title": "Recent remediation traces",
+      "description": "Requires tracing enabled and the remediation profile for actual worker spans. PROCESS spans continue RabbitMQ context; an actual allowlisted actuator call appears as a CLIENT child span. Rejected, duplicate, stale, or otherwise non-actuating deliveries may have no actuator span.",
+      "gridPos": {
+        "x": 0,
+        "y": 74,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"signalforge-remediation-worker\" }",
+          "tableType": "traces",
+          "limit": 20
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "row",
+      "title": "Distributed traces",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 82
+      },
+      "panels": []
+    },
+    {
       "id": 15,
       "type": "table",
       "title": "Recent SignalForge traces",
       "description": "Requires SIGNALFORGE_TRACING_ENABLED=true. Select a trace ID to open its full span tree in Explore.",
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 83,
         "w": 24,
         "h": 8
       },
@@ -803,7 +1082,7 @@
       "description": "Spans with OpenTelemetry error status. An empty table is normal during a healthy period.",
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 91,
         "w": 24,
         "h": 8
       },
