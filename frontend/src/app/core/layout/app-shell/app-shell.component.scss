@@ -1,0 +1,260 @@
+:host {
+  display: block;
+  min-height: 100dvh;
+}
+
+.shell {
+  min-height: 100dvh;
+  background: var(--sf-bg);
+}
+
+.topbar {
+  position: relative;
+  z-index: 2;
+  height: 64px;
+  border-bottom: 1px solid var(--sf-border);
+  padding: 0 24px;
+  color: var(--sf-text);
+  background: var(--sf-surface);
+}
+
+.product {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  text-decoration: none;
+
+  strong,
+  small {
+    display: block;
+  }
+
+  strong {
+    font-size: 0.98rem;
+    line-height: 1.1;
+  }
+
+  small {
+    margin-top: 3px;
+    color: var(--sf-text-muted);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+}
+
+.product-mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--sf-accent);
+  border-radius: 7px;
+  color: var(--sf-accent);
+  background: rgb(83 211 237 / 8%);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.topbar-spacer {
+  flex: 1;
+}
+
+.workspace-label {
+  color: var(--sf-text-muted);
+  font-size: 0.78rem;
+}
+
+.topbar-indicator {
+  width: 7px;
+  height: 7px;
+  margin-left: 12px;
+  border-radius: 50%;
+  background: var(--sf-accent);
+  box-shadow: 0 0 0 3px rgb(83 211 237 / 12%);
+}
+
+.workspace {
+  min-height: calc(100dvh - 64px);
+  background: var(--sf-bg);
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  min-height: calc(100dvh - 64px);
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--sf-border);
+  background: var(--sf-surface);
+}
+
+nav {
+  display: grid;
+  gap: 5px;
+  padding: 26px 12px;
+
+  a {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 42px;
+    border-left: 3px solid transparent;
+    border-radius: 5px;
+    padding: 0 12px;
+    color: var(--sf-text-muted);
+    font-size: 0.88rem;
+    font-weight: 600;
+    text-decoration: none;
+
+    &:hover {
+      color: var(--sf-text);
+      background: var(--sf-surface-soft);
+    }
+
+    &.active {
+      border-left-color: var(--sf-accent);
+      color: var(--sf-text);
+      background: rgb(83 211 237 / 11%);
+    }
+  }
+}
+
+.nav-heading,
+.footer-label {
+  padding: 0 12px;
+  color: var(--sf-text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.nav-heading {
+  margin: 0 0 10px;
+}
+
+.nav-glyph {
+  width: 20px;
+  color: var(--sf-accent);
+  font-size: 1.25rem;
+  line-height: 1;
+  text-align: center;
+}
+
+.sidebar-footer {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  margin-top: auto;
+  border-top: 1px solid var(--sf-border);
+  padding: 19px 16px 22px;
+
+  .footer-label {
+    padding: 0;
+  }
+
+  .user-email {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    color: var(--sf-text);
+    font-size: 0.82rem;
+  }
+
+  .user-role {
+    border: 1px solid var(--sf-border-strong);
+    border-radius: 5px;
+    padding: 2px 7px;
+    color: var(--sf-accent);
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  button {
+    margin-top: 8px;
+  }
+}
+
+.content {
+  min-width: 0;
+  padding: clamp(24px, 4vw, 54px);
+  background: linear-gradient(90deg, rgb(83 211 237 / 2%), transparent 35%), var(--sf-bg);
+}
+
+.mobile-menu,
+.mobile-sidenav {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    padding: 0 12px;
+  }
+
+  .mobile-menu {
+    display: inline-flex;
+    min-width: 44px;
+    margin-right: 4px;
+  }
+
+  .menu-icon {
+    font-size: 1.35rem;
+  }
+
+  .workspace-label,
+  .topbar-indicator,
+  .sidebar {
+    display: none;
+  }
+
+  .workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mobile-sidenav {
+    display: block;
+    width: min(82vw, 300px);
+    border-right: 1px solid var(--sf-border);
+    color: var(--sf-text);
+    background: var(--sf-surface);
+
+    nav {
+      padding-top: 22px;
+    }
+  }
+
+  .mobile-identity {
+    display: grid;
+    gap: 8px;
+    border-top: 1px solid var(--sf-border);
+    padding: 20px 24px;
+
+    strong {
+      overflow-wrap: anywhere;
+      font-size: 0.84rem;
+    }
+
+    span {
+      color: var(--sf-accent);
+      font-size: 0.75rem;
+    }
+
+    button {
+      justify-self: start;
+    }
+  }
+
+  .content {
+    padding: 26px 20px;
+  }
+}
+
+@media (max-width: 390px) {
+  .product small {
+    display: none;
+  }
+}

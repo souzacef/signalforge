@@ -11,8 +11,9 @@ development straightforward while domain boundaries are still emerging, without
 preventing modules from being separated later when real operational needs justify
 it.
 
-RAG, observability dashboards, Angular, Kubernetes, Helm, Terraform, and AWS
-are planned directions. They are not implemented in this phase.
+The Angular frontend now provides an authentication and operator-console shell
+foundation. Incident, triage, and remediation data views remain later Phase 6 work.
+RAG, Kubernetes, Helm, Terraform, and AWS are planned directions.
 
 ## Prerequisites
 
@@ -73,6 +74,35 @@ uv run uvicorn signalforge.main:app --app-dir src --reload
 
 This direct host-development workflow remains supported and uses Uvicorn reload
 for local iteration.
+
+## Frontend development
+
+The Phase 6a Angular application lives in `frontend/`. It provides login,
+session restoration, protected navigation, identity display, and logout. The
+Incidents and Remediation pages are placeholders; later Phase 6 slices will add
+operational data.
+
+Use Node.js 24.15.0 or a later 24.x release and npm 11.13.0 or a later 11.x
+release. Start the local backend at <http://127.0.0.1:8000> first, using the
+setup above and a bootstrapped user. From the repository root:
+
+```sh
+cd frontend
+npm ci
+npm start
+```
+
+Open <http://localhost:4200>. The normal `npm start` command activates the
+Angular development proxy: relative `/api/...` requests are forwarded to
+`http://127.0.0.1:8000`. The application itself uses relative API paths.
+There is no globally installed Angular CLI requirement.
+
+Run focused frontend tests and a production build from `frontend/`:
+
+```sh
+npm run test:ci
+npm run build
+```
 
 ## Container workflow
 
