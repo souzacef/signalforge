@@ -12,7 +12,7 @@
       <span class="menu-icon" aria-hidden="true">☰</span>
     </button>
 
-    <a class="product" routerLink="/incidents" aria-label="SignalForge home">
+    <a class="product" routerLink="/overview" aria-label="SignalForge home">
       <span class="product-mark" aria-hidden="true">SF</span>
       <span>
         <strong>SignalForge</strong>
@@ -36,6 +36,15 @@
       class="mobile-sidenav"
     >
       <nav aria-label="Primary navigation">
+        <a
+          routerLink="/overview"
+          routerLinkActive="active"
+          [routerLinkActiveOptions]="{ exact: true }"
+          (click)="closeMobileNav()"
+        >
+          <span class="nav-glyph" aria-hidden="true">⌂</span>
+          Overview
+        </a>
         <a routerLink="/incidents" routerLinkActive="active" (click)="closeMobileNav()">
           <span class="nav-glyph" aria-hidden="true">▤</span>
           Incidents
@@ -59,6 +68,14 @@
         <aside class="sidebar">
           <nav aria-label="Primary navigation">
             <span class="nav-heading">Workspace</span>
+            <a
+              routerLink="/overview"
+              routerLinkActive="active"
+              [routerLinkActiveOptions]="{ exact: true }"
+            >
+              <span class="nav-glyph" aria-hidden="true">⌂</span>
+              <span>Overview</span>
+            </a>
             <a routerLink="/incidents" routerLinkActive="active">
               <span class="nav-glyph" aria-hidden="true">▤</span>
               <span>Incidents</span>

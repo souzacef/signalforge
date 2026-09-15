@@ -12,7 +12,12 @@ preventing modules from being separated later when real operational needs justif
 it.
 
 The Angular frontend now provides authentication, an operator-console shell,
-and Incident list and detail views. Incident detail is read-only for viewers.
+an Operations Overview, and Incident list and detail views. Authenticated users
+land on the overview, which summarizes backend totals for Open, Acknowledged,
+Critical open, and Pending approval records and previews recent Open Incidents
+and proposals awaiting human review. It uses the existing domain list APIs and
+refreshes only when the operator selects Refresh; it does not infer historical
+trends or analytics. Incident detail is read-only for viewers.
 Operators and admins can acknowledge an open Incident and resolve an acknowledged
 Incident through server-authoritative lifecycle transitions; arbitrary status
 editing and reopening are not supported. The detail view keeps deterministic
@@ -85,8 +90,11 @@ for local iteration.
 ## Frontend development
 
 The Phase 6 Angular application lives in `frontend/`. It provides login,
-session restoration, protected navigation, identity display, logout, and
-authenticated Incident list and detail views. The list supports all backend
+session restoration, protected navigation, identity display, logout, an
+authenticated Operations Overview, and Incident list and detail views. The
+overview reads current totals and previews from the existing Incident and
+Remediation list APIs. It has manual Refresh only and makes no historical or
+trend claims. The Incident list supports all backend
 filters, server-side pagination, and URL-preserved filter and page state. On the
 detail view, viewers remain read-only; operators and admins may acknowledge open
 Incidents and resolve acknowledged Incidents. The server response supplies every

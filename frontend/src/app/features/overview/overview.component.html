@@ -1,0 +1,174 @@
+<section class="overview-page" aria-labelledby="overview-title" [attr.aria-busy]="loading()">
+  <header class="page-heading">
+    <div>
+      <p class="eyebrow">Operations / Current state</p>
+      <h1 id="overview-title">Operations overview</h1>
+      <p>Current durable Incident and remediation state from SignalForge domain APIs.</p>
+    </div>
+    <button mat-stroked-button type="button" (click)="refresh()" [disabled]="loading()">
+      Refresh
+    </button>
+  </header>
+
+  @if (loading()) {
+    <div class="load-status" role="status" aria-live="polite">
+      <mat-progress-bar mode="indeterminate" />
+      <span>{{
+        snapshot() ? 'Refreshing operations overview…' : 'Loading operations overview…'
+      }}</span>
+    </div>
+  }
+
+  @if (loadError()) {
+    <section class="message-state error-state" role="alert" aria-labelledby="overview-error-title">
+      <span class="state-symbol" aria-hidden="true">!</span>
+      <div>
+        <h2 id="overview-error-title">Operations overview could not be loaded.</h2>
+        <p>Check the connection and try loading the current state again.</p>
+        <button mat-stroked-button type="button" (click)="refresh()" [disabled]="loading()">
+          Retry
+        </button>
+      </div>
+    </section>
+  } @else if (snapshot(); as overview) {
+    <section class="summary-region" aria-labelledby="summary-heading">
+      <h2 id="summary-heading">Summary metrics</h2>
+      <div class="metric-grid">
+        <article class="metric-card">
+          <p id="open-label" class="metric-label">Open incidents</p>
+          <strong class="metric-value" aria-labelledby="open-label">{{
+            overview.openIncidentsTotal
+          }}</strong>
+          <p>Incidents currently awaiting action.</p>
+          <a routerLink="/incidents" [queryParams]="{ status: 'open' }">View open incidents</a>
+        </article>
+        <article class="metric-card metric-attention">
+          <p id="acknowledged-label" class="metric-label">Acknowledged</p>
+          <strong class="metric-value" aria-labelledby="acknowledged-label">{{
+            overview.acknowledgedIncidentsTotal
+          }}</strong>
+          <p>Incidents acknowledged by an operator.</p>
+          <a routerLink="/incidents" [queryParams]="{ status: 'acknowledged' }"
+            >View acknowledged incidents</a
+          >
+        </article>
+        <article class="metric-card metric-critical">
+          <p id="critical-label" class="metric-label">
+            <span>Critical open</span>
+            <span class="critical-mark" aria-hidden="true">Critical</span>
+          </p>
+          <strong class="metric-value" aria-labelledby="critical-label">{{
+            overview.criticalOpenIncidentsTotal
+          }}</strong>
+          <p>Open incidents with critical severity.</p>
+          <a routerLink="/incidents" [queryParams]="{ status: 'open', severity: 'critical' }"
+            >View critical open incidents</a
+          >
+        </article>
+        <article class="metric-card metric-attention">
+          <p id="pending-label" class="metric-label">Pending approval</p>
+          <strong class="metric-value" aria-labelledby="pending-label">{{
+            overview.pendingRemediationTotal
+          }}</strong>
+          <p>Proposals waiting for human approval.</p>
+          <a routerLink="/remediation" [queryParams]="{ status: 'pending_approval' }"
+            >View pending proposals</a
+          >
+        </article>
+      </div>
+    </section>
+
+    <div class="preview-grid">
+      <section class="preview-panel" aria-labelledby="recent-incidents-heading">
+        <header class="panel-heading">
+          <div>
+            <h2 id="recent-incidents-heading">Recent open incidents</h2>
+            <p>Newest backend results.</p>
+          </div>
+          <a routerLink="/incidents" [queryParams]="{ status: 'open' }">View all open incidents</a>
+        </header>
+        @if (overview.openIncidentsTotal === 0) {
+          <p class="empty-state" role="status">No open incidents.</p>
+        } @else {
+          <ul class="preview-list incident-list">
+            @for (incident of overview.recentOpenIncidents; track incident.id) {
+              <li>
+                <div class="row-main">
+                  <span
+                    class="severity-badge"
+                    [class]="'severity-badge severity-' + incident.severity"
+                    >{{ severityLabel(incident.severity) }}</span
+                  >
+                  <a
+                    class="primary-link"
+                    [routerLink]="['/incidents', incident.id]"
+                    [queryParams]="{ status: 'open' }"
+                    >{{ incident.title }}</a
+                  >
+                </div>
+                <div class="row-meta">
+                  <span class="source-value">{{ incident.source }}</span>
+                  <span class="status-badge status-open">{{ statusLabel(incident.status) }}</span>
+                  <time
+                    [attr.datetime]="incident.occurred_at"
+                    [attr.title]="incident.occurred_at"
+                    >{{ incident.occurred_at | date: 'medium' }}</time
+                  >
+                </div>
+              </li>
+            }
+          </ul>
+        }
+      </section>
+
+      <section class="preview-panel" aria-labelledby="pending-review-heading">
+        <header class="panel-heading">
+          <div>
+            <h2 id="pending-review-heading">Pending human review</h2>
+            <p>Newest proposals awaiting approval.</p>
+          </div>
+          <a routerLink="/remediation" [queryParams]="{ status: 'pending_approval' }"
+            >View all pending proposals</a
+          >
+        </header>
+        @if (overview.pendingRemediationTotal === 0) {
+          <p class="empty-state" role="status">
+            No remediation proposals are pending human review.
+          </p>
+        } @else {
+          <ul class="preview-list proposal-list">
+            @for (proposal of overview.pendingRemediationProposals; track proposal.id) {
+              <li>
+                <div class="row-main">
+                  <a
+                    class="primary-link"
+                    [routerLink]="['/remediation', proposal.id]"
+                    [queryParams]="{ status: 'pending_approval' }"
+                    [attr.aria-label]="
+                      actionLabel(proposal.action_kind) +
+                      ' for ' +
+                      proposal.target +
+                      ', proposal details'
+                    "
+                    >{{ actionLabel(proposal.action_kind) }}</a
+                  >
+                  <strong class="target-value">{{ proposal.target }}</strong>
+                </div>
+                <div class="row-meta">
+                  <span
+                    [attr.title]="proposal.proposed_by_user_id"
+                    [attr.aria-label]="'Proposed by user ID ' + proposal.proposed_by_user_id"
+                    >Proposed by {{ compactId(proposal.proposed_by_user_id) }}</span
+                  >
+                  <time [attr.datetime]="proposal.created_at" [attr.title]="proposal.created_at">{{
+                    proposal.created_at | date: 'medium'
+                  }}</time>
+                </div>
+              </li>
+            }
+          </ul>
+        }
+      </section>
+    </div>
+  }
+</section>
