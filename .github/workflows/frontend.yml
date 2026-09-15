@@ -5,11 +5,15 @@ on:
     paths:
       - "frontend/**"
       - ".github/workflows/frontend.yml"
+      - ".env.example"
+      - "compose.yaml"
       - "README.md"
   pull_request:
     paths:
       - "frontend/**"
       - ".github/workflows/frontend.yml"
+      - ".env.example"
+      - "compose.yaml"
       - "README.md"
 
 permissions:
@@ -40,3 +44,45 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Build production container
+        run: docker build --tag signalforge-frontend:ci .
+
+      - name: Smoke production container
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_name="signalforge-frontend-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker rm --force "${container_name}" >/dev/null 2>&1 || true' EXIT
+
+          docker run --detach \
+            --name "${container_name}" \
+            --add-host backend:127.0.0.1 \
+            --publish 127.0.0.1:18080:8080 \
+            signalforge-frontend:ci
+
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:18080/healthz >/dev/null; then
+              break
+            fi
+            if [[ "${attempt}" == 20 ]]; then
+              docker logs "${container_name}"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          curl --fail --silent --show-error \
+            http://127.0.0.1:18080/ > "${RUNNER_TEMP}/frontend-index.html"
+          grep --fixed-strings --quiet '<app-root></app-root>' \
+            "${RUNNER_TEMP}/frontend-index.html"
+          curl --fail --silent --show-error \
+            http://127.0.0.1:18080/overview > "${RUNNER_TEMP}/frontend-overview.html"
+          curl --fail --silent --show-error \
+            http://127.0.0.1:18080/incidents/example > "${RUNNER_TEMP}/frontend-incident.html"
+
+          cmp "${RUNNER_TEMP}/frontend-index.html" \
+            "${RUNNER_TEMP}/frontend-overview.html"
+          cmp "${RUNNER_TEMP}/frontend-index.html" \
+            "${RUNNER_TEMP}/frontend-incident.html"

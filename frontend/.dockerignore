@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+.angular
+coverage
+dist
+node_modules
+*.log
+logs
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+*.swp
+*~
