@@ -1,8 +1,11 @@
 import { HttpErrorResponse } from '@angular/common/http';
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, of, Subject, throwError } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { User } from '../../core/models/user';
 import { vi } from 'vitest';
 import { EnrichmentListResponse, Incident, IncidentTriage } from './incident.models';
 import { IncidentsApiService } from './incidents-api.service';
@@ -11,6 +14,16 @@ import { isIncidentId } from './incident-id';
 
 const id = '57ed68ac-bc67-493e-a621-f63da52d6b12';
 const otherId = '79caa2b3-59e2-4187-953c-e590a68aab2a';
+const operator: User = {
+  id: otherId,
+  email: 'operator@example.com',
+  role: 'operator',
+  is_active: true,
+  created_at: '2026-09-15T16:00:00Z',
+  updated_at: '2026-09-15T16:00:00Z',
+};
+const currentUser = signal<User | null>(operator);
+
 const incident: Incident = {
   id,
   source: 'prometheus',
@@ -39,25 +52,36 @@ const enrichment: EnrichmentListResponse = {
   total: 2,
   limit: 1,
   offset: 0,
-  items: [{
-    request_event_id: otherId,
-    incident_id: id,
-    trigger_event_id: otherId,
-    provider: 'provider-name',
-    model: 'model-name',
-    summary: 'Review checkout request errors',
-    category: 'availability',
-    suspected_component: 'checkout-api',
-    investigation_steps: ['Inspect errors', 'Compare recent deployments'],
-    created_at: '2026-09-15T17:48:00Z',
-  }],
+  items: [
+    {
+      request_event_id: otherId,
+      incident_id: id,
+      trigger_event_id: otherId,
+      provider: 'provider-name',
+      model: 'model-name',
+      summary: 'Review checkout request errors',
+      category: 'availability',
+      suspected_component: 'checkout-api',
+      investigation_steps: ['Inspect errors', 'Compare recent deployments'],
+      created_at: '2026-09-15T17:48:00Z',
+    },
+  ],
 };
 const notFound = new HttpErrorResponse({ status: 404, statusText: 'Not Found' });
 const serverError = new HttpErrorResponse({ status: 503, statusText: 'Unavailable' });
+const forbidden = new HttpErrorResponse({ status: 403, statusText: 'Forbidden' });
+const conflict = new HttpErrorResponse({ status: 409, statusText: 'Conflict' });
 
 function visible(harness: RouterTestingHarness): string {
   harness.detectChanges();
   return harness.routeNativeElement?.textContent ?? '';
+}
+
+function button(harness: RouterTestingHarness, label: string): HTMLButtonElement | undefined {
+  harness.detectChanges();
+  return Array.from(
+    harness.routeNativeElement?.querySelectorAll<HTMLButtonElement>('button') ?? [],
+  ).find((candidate) => candidate.textContent?.trim() === label);
 }
 
 describe('Incident ID validation', () => {
@@ -71,16 +95,34 @@ describe('Incident ID validation', () => {
 describe('IncidentDetailComponent', () => {
   const getIncident = vi.fn<(value: string) => Observable<Incident>>();
   const getIncidentTriage = vi.fn<(value: string) => Observable<IncidentTriage>>();
-  const getLatestIncidentEnrichment = vi.fn<(value: string) => Observable<EnrichmentListResponse>>();
+  const getLatestIncidentEnrichment =
+    vi.fn<(value: string) => Observable<EnrichmentListResponse>>();
+  const acknowledgeIncident = vi.fn<(value: string) => Observable<Incident>>();
+  const resolveIncident = vi.fn<(value: string) => Observable<Incident>>();
+  const invalidateSession = vi.fn();
 
   beforeEach(() => {
     getIncident.mockReset().mockReturnValue(of(incident));
     getIncidentTriage.mockReset().mockReturnValue(of(triage));
     getLatestIncidentEnrichment.mockReset().mockReturnValue(of(enrichment));
+    acknowledgeIncident.mockReset().mockReturnValue(of(incident));
+    resolveIncident.mockReset().mockReturnValue(of(incident));
+    invalidateSession.mockReset();
+    currentUser.set(operator);
     TestBed.configureTestingModule({
       providers: [
         provideRouter([{ path: 'incidents/:incidentId', component: IncidentDetailComponent }]),
-        { provide: IncidentsApiService, useValue: { getIncident, getIncidentTriage, getLatestIncidentEnrichment } },
+        {
+          provide: IncidentsApiService,
+          useValue: {
+            getIncident,
+            getIncidentTriage,
+            getLatestIncidentEnrichment,
+            acknowledgeIncident,
+            resolveIncident,
+          },
+        },
+        { provide: AuthService, useValue: { currentUser, invalidateSession } },
       ],
     });
   });
@@ -105,7 +147,9 @@ describe('IncidentDetailComponent', () => {
     expect(text).toContain(incident.description);
     expect(text).toContain('Incident ID');
     expect(text).not.toContain('Resolved by');
-    expect(harness.routeNativeElement?.querySelector('time')?.getAttribute('datetime')).toBe(incident.occurred_at);
+    expect(harness.routeNativeElement?.querySelector('time')?.getAttribute('datetime')).toBe(
+      incident.occurred_at,
+    );
   });
 
   it('makes no API calls for a malformed UUID and offers a clean back link', async () => {
@@ -114,12 +158,16 @@ describe('IncidentDetailComponent', () => {
     expect(getIncident).not.toHaveBeenCalled();
     expect(getIncidentTriage).not.toHaveBeenCalled();
     expect(getLatestIncidentEnrichment).not.toHaveBeenCalled();
-    expect(harness.routeNativeElement?.querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/incidents');
+    expect(
+      harness.routeNativeElement?.querySelector<HTMLAnchorElement>('a')?.getAttribute('href'),
+    ).toBe('/incidents');
   });
 
   it('preserves list query parameters in the back link', async () => {
     const { harness } = await open(`/incidents/${id}?status=open&limit=50&offset=100`);
-    expect(harness.routeNativeElement?.querySelector<HTMLAnchorElement>('a')?.getAttribute('href')).toBe('/incidents?status=open&limit=50&offset=100');
+    expect(
+      harness.routeNativeElement?.querySelector<HTMLAnchorElement>('a')?.getAttribute('href'),
+    ).toBe('/incidents?status=open&limit=50&offset=100');
   });
 
   it('shows Incident not found without secondary reads', async () => {
@@ -131,7 +179,9 @@ describe('IncidentDetailComponent', () => {
   });
 
   it('shows a safe Incident error and Retry reloads the current ID', async () => {
-    getIncident.mockReturnValueOnce(throwError(() => serverError)).mockReturnValueOnce(of(incident));
+    getIncident
+      .mockReturnValueOnce(throwError(() => serverError))
+      .mockReturnValueOnce(of(incident));
     const { harness, component } = await open();
     expect(visible(harness)).toContain('Incident details could not be loaded.');
     expect(visible(harness)).not.toContain('Unavailable');
@@ -164,7 +214,10 @@ describe('IncidentDetailComponent', () => {
   });
 
   it.each([
-    ['P1', 'P1 · Immediate'], ['P2', 'P2 · High'], ['P3', 'P3 · Moderate'], ['P4', 'P4 · Low'],
+    ['P1', 'P1 · Immediate'],
+    ['P2', 'P2 · High'],
+    ['P3', 'P3 · Moderate'],
+    ['P4', 'P4 · Low'],
   ] as const)('labels %s priority as %s', async (priority, label) => {
     getIncidentTriage.mockReturnValue(of({ ...triage, priority }));
     const { harness } = await open();
@@ -212,14 +265,24 @@ describe('IncidentDetailComponent', () => {
     expect(text).toContain('model-name');
     expect(text).toContain('Latest of 2 persisted advisory snapshots.');
     expect(harness.routeNativeElement?.querySelectorAll('.advisory-content ol li').length).toBe(2);
-    expect(harness.routeNativeElement?.querySelector('.advisory-content time')?.getAttribute('datetime')).toBe(enrichment.items[0].created_at);
+    expect(
+      harness.routeNativeElement?.querySelector('.advisory-content time')?.getAttribute('datetime'),
+    ).toBe(enrichment.items[0].created_at);
   });
 
   it('omits absent suspected component and renders AI text as plain text', async () => {
-    getLatestIncidentEnrichment.mockReturnValue(of({
-      ...enrichment,
-      items: [{ ...enrichment.items[0], suspected_component: null, summary: '<script>alert(1)</script>' }],
-    }));
+    getLatestIncidentEnrichment.mockReturnValue(
+      of({
+        ...enrichment,
+        items: [
+          {
+            ...enrichment.items[0],
+            suspected_component: null,
+            summary: '<script>alert(1)</script>',
+          },
+        ],
+      }),
+    );
     const { harness } = await open();
     expect(visible(harness)).toContain('<script>alert(1)</script>');
     expect(visible(harness)).not.toContain('Suspected component');
@@ -230,5 +293,274 @@ describe('IncidentDetailComponent', () => {
     getLatestIncidentEnrichment.mockReturnValue(throwError(() => serverError));
     const { harness } = await open();
     expect(visible(harness)).toContain('AI advisory could not be loaded.');
+  });
+
+  it.each([
+    ['viewer', 'open', null],
+    ['viewer', 'acknowledged', null],
+    ['operator', 'open', 'Acknowledge incident'],
+    ['admin', 'open', 'Acknowledge incident'],
+    ['operator', 'acknowledged', 'Resolve incident'],
+    ['admin', 'acknowledged', 'Resolve incident'],
+  ] as const)('gates %s actions for an %s incident', async (role, status, action) => {
+    currentUser.set({ ...operator, role });
+    getIncident.mockReturnValue(of({ ...incident, status }));
+    const { harness } = await open();
+    expect(button(harness, 'Acknowledge incident') !== undefined).toBe(
+      action === 'Acknowledge incident',
+    );
+    expect(button(harness, 'Resolve incident') !== undefined).toBe(action === 'Resolve incident');
+    if (role === 'viewer') {
+      expect(visible(harness)).toContain('Lifecycle changes require Operator or Admin access.');
+    }
+  });
+
+  it.each(['viewer', 'operator', 'admin'] as const)(
+    'offers no mutation action to %s for a resolved incident',
+    async (role) => {
+      currentUser.set({ ...operator, role });
+      getIncident.mockReturnValue(of({ ...incident, status: 'resolved' }));
+      const { harness } = await open();
+      expect(button(harness, 'Acknowledge incident')).toBeUndefined();
+      expect(button(harness, 'Resolve incident')).toBeUndefined();
+    },
+  );
+
+  it('acknowledges once without an optimistic update and preserves triage and advisory state', async () => {
+    const pending = new Subject<Incident>();
+    const openIncident = {
+      ...incident,
+      status: 'open' as const,
+      acknowledged_at: null,
+      acknowledged_by_user_id: null,
+    };
+    const acknowledged = {
+      ...openIncident,
+      status: 'acknowledged' as const,
+      acknowledged_at: '2026-09-15T18:10:00Z',
+      acknowledged_by_user_id: 'a847f776-b9d9-43a7-b4a2-54d5cabee112',
+      updated_at: '2026-09-15T18:10:00Z',
+    };
+    getIncident.mockReturnValue(of(openIncident));
+    acknowledgeIncident.mockReturnValue(pending);
+    const { harness, component } = await open();
+
+    button(harness, 'Acknowledge incident')?.click();
+    expect(acknowledgeIncident).toHaveBeenCalledTimes(1);
+    expect(acknowledgeIncident).toHaveBeenCalledWith(id);
+    expect(component.incident()?.status).toBe('open');
+    expect(component.mutationState()).toBe('acknowledging');
+    expect(button(harness, 'Acknowledge incident')?.disabled).toBe(true);
+    expect(button(harness, 'Refresh')?.disabled).toBe(true);
+    expect(visible(harness)).toContain('Acknowledging…');
+    component.acknowledge();
+    expect(acknowledgeIncident).toHaveBeenCalledTimes(1);
+
+    pending.next(acknowledged);
+    pending.complete();
+    expect(component.incident()).toEqual(acknowledged);
+    expect(visible(harness)).toContain('Incident acknowledged.');
+    expect(visible(harness)).toContain(acknowledged.acknowledged_by_user_id);
+    expect(button(harness, 'Acknowledge incident')).toBeUndefined();
+    expect(button(harness, 'Resolve incident')).toBeDefined();
+    expect(visible(harness)).toContain('P1 · Immediate');
+    expect(visible(harness)).toContain(enrichment.items[0].summary);
+    expect(getIncident).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires confirmation to resolve, supports cancel, and applies only the response state', async () => {
+    const pending = new Subject<Incident>();
+    const resolved = {
+      ...incident,
+      status: 'resolved' as const,
+      resolved_at: '2026-09-15T18:20:00Z',
+      resolved_by_user_id: '2ae4d41d-ee4f-4da5-8e40-f48faef530bb',
+      updated_at: '2026-09-15T18:20:00Z',
+    };
+    resolveIncident.mockReturnValue(pending);
+    const { harness, component } = await open();
+
+    button(harness, 'Resolve incident')?.click();
+    expect(visible(harness)).toContain('Resolve this incident?');
+    expect(resolveIncident).not.toHaveBeenCalled();
+    button(harness, 'Cancel')?.click();
+    expect(button(harness, 'Confirm resolve')).toBeUndefined();
+    expect(resolveIncident).not.toHaveBeenCalled();
+
+    button(harness, 'Resolve incident')?.click();
+    button(harness, 'Confirm resolve')?.click();
+    expect(resolveIncident).toHaveBeenCalledTimes(1);
+    expect(component.incident()?.status).toBe('acknowledged');
+    expect(component.mutationState()).toBe('resolving');
+    expect(button(harness, 'Confirm resolve')?.disabled).toBe(true);
+    expect(visible(harness)).toContain('Resolving…');
+    component.confirmResolve();
+    expect(resolveIncident).toHaveBeenCalledTimes(1);
+
+    pending.next(resolved);
+    pending.complete();
+    expect(component.incident()).toEqual(resolved);
+    expect(visible(harness)).toContain('Incident resolved.');
+    expect(visible(harness)).toContain(resolved.resolved_by_user_id);
+    expect(button(harness, 'Resolve incident')).toBeUndefined();
+    expect(button(harness, 'Confirm resolve')).toBeUndefined();
+    expect(visible(harness)).toContain('Lifecycle complete.');
+  });
+
+  it.each([
+    [
+      'acknowledge',
+      { ...incident, status: 'open' as const },
+      { ...incident, status: 'acknowledged' as const },
+    ],
+    ['resolve', incident, { ...incident, status: 'resolved' as const }],
+  ] as const)(
+    'refreshes authoritative detail after a %s conflict without retrying',
+    async (action, initial, latest) => {
+      getIncident.mockReturnValueOnce(of(initial)).mockReturnValueOnce(of(latest));
+      if (action === 'acknowledge') acknowledgeIncident.mockReturnValue(throwError(() => conflict));
+      else resolveIncident.mockReturnValue(throwError(() => conflict));
+      const { harness, component } = await open();
+
+      if (action === 'acknowledge') button(harness, 'Acknowledge incident')?.click();
+      else {
+        button(harness, 'Resolve incident')?.click();
+        button(harness, 'Confirm resolve')?.click();
+      }
+
+      expect(component.incident()).toEqual(latest);
+      expect(getIncident).toHaveBeenCalledTimes(2);
+      expect(
+        action === 'acknowledge' ? acknowledgeIncident : resolveIncident,
+      ).toHaveBeenCalledTimes(1);
+      expect(visible(harness)).toContain('The latest state has been loaded.');
+      expect(getIncidentTriage).toHaveBeenCalledTimes(2);
+      expect(getLatestIncidentEnrichment).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('preserves the incident and session on forbidden mutation', async () => {
+    const openIncident = { ...incident, status: 'open' as const };
+    getIncident.mockReturnValue(of(openIncident));
+    acknowledgeIncident.mockReturnValue(throwError(() => forbidden));
+    const { harness, component } = await open();
+    button(harness, 'Acknowledge incident')?.click();
+    expect(component.incident()).toEqual(openIncident);
+    expect(visible(harness)).toContain('You do not have permission to change this incident.');
+    expect(acknowledgeIncident).toHaveBeenCalledTimes(1);
+    expect(invalidateSession).not.toHaveBeenCalled();
+    expect(button(harness, 'Acknowledge incident')?.disabled).toBe(false);
+  });
+
+  it('moves to the existing not-found view when a lifecycle mutation returns 404', async () => {
+    resolveIncident.mockReturnValue(throwError(() => notFound));
+    const { harness } = await open();
+    button(harness, 'Resolve incident')?.click();
+    button(harness, 'Confirm resolve')?.click();
+    expect(visible(harness)).toContain('Incident not found.');
+    expect(visible(harness)).not.toContain('Not Found');
+    expect(resolveIncident).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      'acknowledge',
+      { ...incident, status: 'open' as const },
+      'Incident could not be acknowledged. Try again.',
+    ],
+    ['resolve', incident, 'Incident could not be resolved. Try again.'],
+  ] as const)(
+    'restores controls and preserves detail after a generic %s failure',
+    async (action, initial, message) => {
+      getIncident.mockReturnValue(of(initial));
+      if (action === 'acknowledge')
+        acknowledgeIncident.mockReturnValue(throwError(() => serverError));
+      else resolveIncident.mockReturnValue(throwError(() => serverError));
+      const { harness, component } = await open();
+
+      if (action === 'acknowledge') button(harness, 'Acknowledge incident')?.click();
+      else {
+        button(harness, 'Resolve incident')?.click();
+        button(harness, 'Confirm resolve')?.click();
+      }
+
+      expect(component.incident()).toEqual(initial);
+      expect(component.mutationState()).toBe('idle');
+      expect(visible(harness)).toContain(message);
+      expect(visible(harness)).not.toContain('Unavailable');
+      expect(
+        button(harness, action === 'acknowledge' ? 'Acknowledge incident' : 'Resolve incident')
+          ?.disabled,
+      ).toBe(false);
+    },
+  );
+
+  it('ignores a late mutation response after navigation to another incident', async () => {
+    const pending = new Subject<Incident>();
+    const openIncident = { ...incident, status: 'open' as const };
+    const nextIncident = {
+      ...incident,
+      id: otherId,
+      title: 'New incident',
+      status: 'open' as const,
+    };
+    getIncident.mockReturnValueOnce(of(openIncident)).mockReturnValueOnce(of(nextIncident));
+    acknowledgeIncident.mockReturnValue(pending);
+    const { harness, router, component } = await open();
+    button(harness, 'Acknowledge incident')?.click();
+    await router.navigateByUrl(`/incidents/${otherId}`);
+
+    pending.next({ ...openIncident, status: 'acknowledged' });
+    pending.complete();
+    expect(component.incident()).toEqual(nextIncident);
+    expect(visible(harness)).toContain('New incident');
+    expect(visible(harness)).not.toContain('Incident acknowledged.');
+  });
+
+  it('ignores an old A mutation response after navigating A to B and back to A', async () => {
+    const pending = new Subject<Incident>();
+    const openIncident = { ...incident, status: 'open' as const };
+    const nextIncident = {
+      ...incident,
+      id: otherId,
+      title: 'New incident',
+      status: 'open' as const,
+    };
+    getIncident
+      .mockReturnValueOnce(of(openIncident))
+      .mockReturnValueOnce(of(nextIncident))
+      .mockReturnValueOnce(of(openIncident));
+    acknowledgeIncident.mockReturnValue(pending);
+    const { harness, router, component } = await open();
+    button(harness, 'Acknowledge incident')?.click();
+    await router.navigateByUrl(`/incidents/${otherId}`);
+    await router.navigateByUrl(`/incidents/${id}`);
+
+    pending.next({ ...openIncident, status: 'acknowledged' });
+    pending.complete();
+    expect(component.incident()).toEqual(openIncident);
+    expect(visible(harness)).not.toContain('Incident acknowledged.');
+    expect(button(harness, 'Acknowledge incident')).toBeDefined();
+  });
+
+  it('does not run a stale conflict refresh against a newly navigated incident', async () => {
+    const pending = new Subject<Incident>();
+    const openIncident = { ...incident, status: 'open' as const };
+    const nextIncident = {
+      ...incident,
+      id: otherId,
+      title: 'New incident',
+      status: 'open' as const,
+    };
+    getIncident.mockReturnValueOnce(of(openIncident)).mockReturnValueOnce(of(nextIncident));
+    acknowledgeIncident.mockReturnValue(pending);
+    const { harness, router } = await open();
+    button(harness, 'Acknowledge incident')?.click();
+    await router.navigateByUrl(`/incidents/${otherId}`);
+
+    pending.error(conflict);
+    expect(getIncident).toHaveBeenCalledTimes(2);
+    expect(visible(harness)).toContain('New incident');
+    expect(visible(harness)).not.toContain('state changed');
   });
 });

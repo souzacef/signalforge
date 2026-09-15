@@ -27,15 +27,22 @@ export class IncidentsApiService {
     return this.http.get<Incident>(`/api/v1/incidents/${incidentId}`);
   }
 
+  acknowledgeIncident(incidentId: string): Observable<Incident> {
+    return this.http.post<Incident>(`/api/v1/incidents/${incidentId}/acknowledge`, null);
+  }
+
+  resolveIncident(incidentId: string): Observable<Incident> {
+    return this.http.post<Incident>(`/api/v1/incidents/${incidentId}/resolve`, null);
+  }
+
   getIncidentTriage(incidentId: string): Observable<IncidentTriage> {
     return this.http.get<IncidentTriage>(`/api/v1/incidents/${incidentId}/triage`);
   }
 
   getLatestIncidentEnrichment(incidentId: string): Observable<EnrichmentListResponse> {
     const params = new HttpParams().set('limit', 1).set('offset', 0);
-    return this.http.get<EnrichmentListResponse>(
-      `/api/v1/incidents/${incidentId}/enrichments`,
-      { params },
-    );
+    return this.http.get<EnrichmentListResponse>(`/api/v1/incidents/${incidentId}/enrichments`, {
+      params,
+    });
   }
 }

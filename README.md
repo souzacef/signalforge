@@ -12,13 +12,14 @@ preventing modules from being separated later when real operational needs justif
 it.
 
 The Angular frontend now provides authentication, an operator-console shell,
-and read-only Incident list and detail views. The detail view shows deterministic
-triage as the authoritative priority baseline and the latest persisted AI
-enrichment as advisory only. Incident list filters and page position are preserved
-in the URL and through list-to-detail navigation. No frontend Incident lifecycle
-mutations are available yet. Lifecycle actions and remediation data views
-remain later Phase 6 work. RAG,
-Kubernetes, Helm, Terraform, and AWS are planned directions.
+and Incident list and detail views. Incident detail is read-only for viewers.
+Operators and admins can acknowledge an open Incident and resolve an acknowledged
+Incident through server-authoritative lifecycle transitions; arbitrary status
+editing and reopening are not supported. The detail view keeps deterministic
+triage as the authoritative priority baseline and persisted AI enrichment as
+advisory only. Incident list filters and page position are preserved in the URL
+and through list-to-detail navigation. Remediation data views remain later Phase 6
+work. RAG, Kubernetes, Helm, Terraform, and AWS are planned directions.
 
 ## Prerequisites
 
@@ -83,10 +84,13 @@ for local iteration.
 ## Frontend development
 
 The Phase 6 Angular application lives in `frontend/`. It provides login,
-session restoration, protected navigation, identity display, logout, and an
-authenticated Incident list. The Incident view supports all backend list filters,
-server-side pagination, and URL-preserved filter and page state. Remediation
-remains a placeholder; later Phase 6 slices will add Incident detail and actions.
+session restoration, protected navigation, identity display, logout, and
+authenticated Incident list and detail views. The list supports all backend
+filters, server-side pagination, and URL-preserved filter and page state. On the
+detail view, viewers remain read-only; operators and admins may acknowledge open
+Incidents and resolve acknowledged Incidents. The server response supplies every
+lifecycle state and attribution update. Deterministic triage remains authoritative,
+and AI enrichment remains advisory. Remediation remains a placeholder.
 
 Use Node.js 24.15.0 or a later 24.x release and npm 11.13.0 or a later 11.x
 release. Start the local backend at <http://127.0.0.1:8000> first, using the
