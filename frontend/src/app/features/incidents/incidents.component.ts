@@ -9,7 +9,7 @@ import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTableModule } from '@angular/material/table';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { catchError, EMPTY, startWith, Subject, switchMap, tap } from 'rxjs';
 import {
   DEFAULT_INCIDENT_LIST_QUERY,
@@ -36,6 +36,7 @@ import { IncidentsApiService } from './incidents-api.service';
     MatSelectModule,
     MatTableModule,
     ReactiveFormsModule,
+    RouterLink,
   ],
   templateUrl: './incidents.component.html',
   styleUrl: './incidents.component.scss',
@@ -43,7 +44,7 @@ import { IncidentsApiService } from './incidents-api.service';
 })
 export class IncidentsComponent {
   private readonly api = inject(IncidentsApiService);
-  private readonly route = inject(ActivatedRoute);
+  readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
   private readonly retryRequest = new Subject<void>();

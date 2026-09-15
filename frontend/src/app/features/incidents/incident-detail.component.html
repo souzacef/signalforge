@@ -1,0 +1,136 @@
+<section class="detail-page" aria-labelledby="detail-title">
+  <div class="page-controls">
+    <a mat-button routerLink="/incidents" [queryParams]="route.snapshot.queryParams">
+      ← Back to incidents
+    </a>
+    @if (incidentState() !== 'invalid' && incidentState() !== 'not-found') {
+      <button mat-stroked-button type="button" (click)="refresh()">Refresh</button>
+    }
+  </div>
+
+  @if (incidentState() === 'loading') {
+    <div class="page-message" role="status" aria-live="polite" aria-busy="true">
+      <mat-progress-bar mode="indeterminate" />
+      <h1 id="detail-title">Loading incident detail…</h1>
+    </div>
+  } @else if (incidentState() === 'invalid') {
+    <div class="page-message" role="alert">
+      <h1 id="detail-title">Invalid incident link.</h1>
+      <p>The incident link is unavailable. Return to the incident list.</p>
+    </div>
+  } @else if (incidentState() === 'not-found') {
+    <div class="page-message" role="alert">
+      <h1 id="detail-title">Incident not found.</h1>
+      <p>This incident is not available.</p>
+    </div>
+  } @else if (incidentState() === 'error') {
+    <div class="page-message" role="alert">
+      <h1 id="detail-title">Incident details could not be loaded.</h1>
+      <p>Try loading this incident again.</p>
+      <button mat-stroked-button type="button" (click)="refresh()">Retry</button>
+    </div>
+  } @else if (incident(); as item) {
+    <header class="incident-heading">
+      <p class="eyebrow">Operations / Incident investigation</p>
+      <h1 id="detail-title">{{ item.title }}</h1>
+      <div class="badges">
+        <span class="badge severity-{{ item.severity }}">{{ severityLabels[item.severity] }} severity</span>
+        <span class="badge status-{{ item.status }}">{{ statusLabels[item.status] }}</span>
+      </div>
+      <p class="heading-meta">
+        <span>Source <strong>{{ item.source }}</strong></span>
+        <span>Occurred <time [attr.datetime]="item.occurred_at" [attr.title]="item.occurred_at">{{ item.occurred_at | date: 'medium' }}</time></span>
+      </p>
+    </header>
+
+    <section class="detail-panel" aria-labelledby="facts-heading">
+      <h2 id="facts-heading">Incident details</h2>
+      @if (item.description) {
+        <p class="description">{{ item.description }}</p>
+      }
+      <dl class="facts-grid">
+        <div><dt>Created</dt><dd><time [attr.datetime]="item.created_at" [attr.title]="item.created_at">{{ item.created_at | date: 'medium' }}</time></dd></div>
+        <div><dt>Updated</dt><dd><time [attr.datetime]="item.updated_at" [attr.title]="item.updated_at">{{ item.updated_at | date: 'medium' }}</time></dd></div>
+        @if (item.status === 'acknowledged' || item.status === 'resolved') {
+          @if (item.acknowledged_at) {
+            <div><dt>Acknowledged</dt><dd><time [attr.datetime]="item.acknowledged_at" [attr.title]="item.acknowledged_at">{{ item.acknowledged_at | date: 'medium' }}</time></dd></div>
+          }
+          @if (item.acknowledged_by_user_id) {
+            <div><dt>Acknowledged by</dt><dd class="identifier">User {{ item.acknowledged_by_user_id }}</dd></div>
+          }
+        }
+        @if (item.status === 'resolved') {
+          @if (item.resolved_at) {
+            <div><dt>Resolved</dt><dd><time [attr.datetime]="item.resolved_at" [attr.title]="item.resolved_at">{{ item.resolved_at | date: 'medium' }}</time></dd></div>
+          }
+          @if (item.resolved_by_user_id) {
+            <div><dt>Resolved by</dt><dd class="identifier">User {{ item.resolved_by_user_id }}</dd></div>
+          }
+        }
+        <div class="incident-id"><dt>Incident ID</dt><dd class="identifier">{{ item.id }}</dd></div>
+      </dl>
+    </section>
+
+    <section class="detail-panel triage-panel" aria-labelledby="triage-heading" [attr.aria-busy]="triageState() === 'loading'">
+      <div class="section-heading">
+        <h2 id="triage-heading">Deterministic triage</h2>
+        <p>Deterministic triage is the authoritative priority baseline for this incident.</p>
+      </div>
+      @if (triageState() === 'loading') {
+        <p class="section-state" role="status" aria-live="polite">Loading deterministic triage…</p>
+      } @else if (triageState() === 'missing') {
+        <p class="section-state" role="status">Deterministic triage is not available yet. Use Refresh to check again.</p>
+      } @else if (triageState() === 'error') {
+        <p class="section-state error" role="alert">Deterministic triage could not be loaded. Use Refresh to try again.</p>
+      } @else if (triage(); as decision) {
+        <div class="triage-summary">
+          <span class="priority priority-{{ decision.priority }}">{{ priorityLabels[decision.priority] }}</span>
+          <strong class="review">{{ decision.requires_human_review ? 'Human review required' : 'Human review not required' }}</strong>
+        </div>
+        <dl class="facts-grid">
+          <div><dt>Original severity</dt><dd>{{ severityLabels[decision.original_severity] }}</dd></div>
+          <div><dt>Source</dt><dd>{{ decision.source }}</dd></div>
+          <div><dt>Recorded</dt><dd><time [attr.datetime]="decision.created_at" [attr.title]="decision.created_at">{{ decision.created_at | date: 'medium' }}</time></dd></div>
+        </dl>
+      }
+    </section>
+
+    <section class="detail-panel advisory-panel" aria-labelledby="advisory-heading" [attr.aria-busy]="enrichmentState() === 'loading'">
+      <div class="section-heading">
+        <h2 id="advisory-heading">AI advisory</h2>
+        <p>Advisory only. This does not change deterministic priority or authorize remediation.</p>
+      </div>
+      @if (enrichmentState() === 'loading') {
+        <p class="section-state" role="status" aria-live="polite">Loading persisted AI advisory…</p>
+      } @else if (enrichmentState() === 'empty') {
+        <p class="section-state">No persisted AI advisory is available for this incident. Deterministic triage remains authoritative.</p>
+      } @else if (enrichmentState() === 'error') {
+        <p class="section-state error" role="alert">AI advisory could not be loaded. Use Refresh to try again.</p>
+      } @else if (enrichment(); as snapshots) {
+        @if (snapshots.items[0]; as advisory) {
+          <div class="advisory-content">
+            <div class="advisory-topline"><span class="category">{{ categoryLabels[advisory.category] }}</span></div>
+            <p class="summary">{{ advisory.summary }}</p>
+            @if (advisory.suspected_component) {
+              <p><span class="meta-label">Suspected component</span> {{ advisory.suspected_component }}</p>
+            }
+            <h3>Investigation steps</h3>
+            <ol>
+              @for (step of advisory.investigation_steps; track $index) {
+                <li>{{ step }}</li>
+              }
+            </ol>
+            <dl class="facts-grid provenance">
+              <div><dt>Provider</dt><dd>{{ advisory.provider }}</dd></div>
+              <div><dt>Model</dt><dd>{{ advisory.model }}</dd></div>
+              <div><dt>Recorded</dt><dd><time [attr.datetime]="advisory.created_at" [attr.title]="advisory.created_at">{{ advisory.created_at | date: 'medium' }}</time></dd></div>
+            </dl>
+            @if (snapshots.total > 1) {
+              <p class="snapshot-count">Latest of {{ snapshots.total }} persisted advisory snapshots.</p>
+            }
+          </div>
+        }
+      }
+    </section>
+  }
+</section>

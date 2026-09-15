@@ -61,6 +61,15 @@ describe('IncidentsComponent', () => {
     await completed;
   }
 
+  it('links the title to detail while preserving current list query parameters', async () => {
+    const { harness } = await open('/incidents?status=open&limit=50&offset=100');
+    const title = harness.routeNativeElement?.querySelector<HTMLAnchorElement>('.incident-title');
+    expect(title?.textContent).toContain(incident.title);
+    expect(title?.getAttribute('href')).toBe(
+      `/incidents/${incident.id}?status=open&limit=50&offset=100`,
+    );
+  });
+
   it('populates filter editing state from the initial URL query', async () => {
     const { component } = await open(
       '/incidents?status=open&severity=high&source=prometheus&limit=50&offset=100',
