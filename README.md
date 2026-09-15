@@ -93,8 +93,8 @@ podman compose ps
 
 Migrations are an explicit one-shot command and are never run by any service at
 startup. The same application image supplies the default API command, the
-Alembic CLI, and the standalone dispatcher, consumer, and enrichment-worker
-commands.
+Alembic CLI, and the standalone dispatcher, consumer, enrichment-worker, and
+remediation-worker commands.
 
 The API is available at <http://127.0.0.1:8000> by default. Set
 `BACKEND_PORT` to change the published host port. Compose connects the backend
@@ -103,8 +103,9 @@ development continues to use the URL from `.env`.
 
 The default local five-service core stack consists of PostgreSQL, the FastAPI
 backend, RabbitMQ, the standalone dispatcher, and the standalone consumer. An
-optional sixth enrichment-worker service is available through the `ai` Compose
-profile. RabbitMQ accepts AMQP connections on
+optional enrichment worker is available through the `ai` Compose profile, and
+an optional remediation worker is available through the `remediation` profile.
+RabbitMQ accepts AMQP connections on
 <amqp://127.0.0.1:5672> and exposes its management UI at
 <http://127.0.0.1:15672> by default. `RABBITMQ_PORT` and
 `RABBITMQ_MANAGEMENT_PORT` override those loopback-only host ports. The example
@@ -223,10 +224,9 @@ atomically commits one `requested` execution row and one
 
 The existing dispatcher publishes that outbox event asynchronously to the durable
 classic `signalforge.remediation-execution` RabbitMQ queue through the
-`signalforge.events` direct exchange. Phase 5d1 deliberately has no consumer or
-execution worker, so messages remain queued and no actuator call occurs. Phase 5d2
-will define worker and attempt semantics, including external-outcome ambiguity and
-retry classification. This flow makes no exactly-once execution claim.
+`signalforge.events` direct exchange. The opt-in standalone remediation worker
+consumes that queue and delegates every delivery to the durable one-message
+processor. This flow makes no exactly-once execution claim.
 
 Trusted application code can still invoke the internal Phase 5c executor directly.
 For `restart_service`, it resolves the logical target through an operator-configured
@@ -234,11 +234,41 @@ allowlist of fixed HTTP(S) management endpoints; proposal targets are never
 interpreted as URLs or commands. The HTTP adapter makes one request with a bounded
 timeout and does not follow redirects. The allowlist stays in runtime configuration
 and is never stored on the execution request or event. It defaults to empty and
-therefore fails closed. Operators can provide it as JSON, for example:
+therefore fails closed. The following JSON value is only an example:
 
 ```env
 SIGNALFORGE_REMEDIATION_RESTART_ENDPOINTS={"checkout-api":"http://checkout-control:8080/internal/restart"}
 ```
+
+Run the worker directly after migrations are applied and both database and RabbitMQ
+URLs are configured:
+
+```sh
+uv run python -m signalforge.remediation.runtime
+```
+
+The worker refuses to start unless the trusted restart endpoint allowlist is
+non-empty. It consumes only `signalforge.remediation-execution`, processes
+sequentially with RabbitMQ prefetch exactly one, reuses one non-redirecting HTTP
+client, and never automatically retries an actuator call. Broker redelivery,
+database redelivery, and `in_progress` consumption backoff are not actuator retry:
+the committed attempt-number-one barrier prevents a second call. A redelivered stale
+or ambiguous in-progress attempt becomes `outcome_unknown` after its lease expires.
+No database transaction is held during actuator HTTP I/O.
+
+`SIGTERM` and `SIGINT` stop new work and allow the active handler a bounded drain.
+If the drain expires, cancellation leaves the one-message processor authoritative
+for best-effort `outcome_unknown` persistence and later lease-expiry recovery. The
+Compose service is deliberately opt-in:
+
+```sh
+podman compose --profile remediation up -d remediation-worker
+```
+
+Use the example allowlist above only as a format example, not as a production
+endpoint. Ordinary `podman compose up -d` neither requires an allowlist nor starts
+the remediation worker, so the default stack causes no remediation side effects.
+Phase 5e will add remediation metrics, tracing, and dashboard coverage.
 
 Successful new Incident creation atomically commits the Incident and one durable
 `incident.created` v1 outbox intent in PostgreSQL. The intent stores an immutable
@@ -259,7 +289,8 @@ with mandatory routing and publisher confirms. In a caller-provisioned vhost
 (normally `signalforge`), it declares the durable direct exchange
 `signalforge.events` and durable classic queues for Incident events, triage
 enrichment, and remediation execution, each with its matching event-type routing
-key. No remediation execution consumer exists in this phase.
+key. The remediation worker reuses this topology and consumes only the existing
+remediation execution queue.
 
 The publisher does not query or settle PostgreSQL state. Its robust connection is
 reused across publications; a timeout or ambiguous transport failure retires the
