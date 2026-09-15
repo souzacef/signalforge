@@ -1,0 +1,116 @@
+<section class="detail-page" aria-labelledby="detail-title">
+  <nav class="detail-nav" aria-label="Remediation navigation">
+    <a mat-button [routerLink]="['/remediation']" [queryParams]="backQueryParams()">← Back to remediation</a>
+    @if (proposalState() !== 'invalid') {
+      <button mat-stroked-button type="button" (click)="refresh()">Refresh</button>
+    }
+  </nav>
+
+  @if (proposalState() === 'invalid') {
+    <div class="message-state" role="alert">
+      <h1 id="detail-title">Invalid remediation proposal link.</h1>
+    </div>
+  } @else if (proposalState() === 'loading') {
+    <div class="message-state" role="status" aria-live="polite" aria-busy="true">
+      <h1 id="detail-title">Remediation proposal</h1>
+      <mat-progress-bar mode="indeterminate" />
+      <p>Loading proposal details…</p>
+    </div>
+  } @else if (proposalState() === 'not-found') {
+    <div class="message-state" role="alert">
+      <h1 id="detail-title">Remediation proposal not found.</h1>
+    </div>
+  } @else if (proposalState() === 'error') {
+    <div class="message-state" role="alert">
+      <h1 id="detail-title">Remediation proposal details could not be loaded.</h1>
+      <button mat-stroked-button type="button" (click)="refresh()">Retry</button>
+    </div>
+  } @else if (proposal(); as item) {
+    <header class="detail-header">
+      <p class="eyebrow">Operations / Remediation proposal</p>
+      <h1 id="detail-title">Remediation proposal</h1>
+      <div class="headline-meta">
+        <span class="status-badge" [class]="'status-badge status-' + item.status">{{ statusLabels[item.status] }}</span>
+        <span>{{ actionLabels[item.action_kind] }}</span>
+        <strong>{{ item.target }}</strong>
+      </div>
+    </header>
+
+    <section class="detail-card" aria-labelledby="proposal-heading">
+      <h2 id="proposal-heading">Proposal</h2>
+      <dl class="metadata-grid">
+        <div><dt>Action</dt><dd>{{ actionLabels[item.action_kind] }}</dd></div>
+        <div><dt>Target</dt><dd>{{ item.target }}</dd></div>
+        <div class="full-width"><dt>Reason</dt><dd class="plain-reason">{{ item.reason }}</dd></div>
+        <div><dt>Incident ID</dt><dd>{{ item.incident_id }}</dd></div>
+        <div><dt>Proposed by user ID</dt><dd>{{ item.proposed_by_user_id }}</dd></div>
+        <div><dt>Created</dt><dd><time [attr.datetime]="item.created_at">{{ item.created_at | date: 'medium' }}</time></dd></div>
+        <div><dt>Updated</dt><dd><time [attr.datetime]="item.updated_at">{{ item.updated_at | date: 'medium' }}</time></dd></div>
+      </dl>
+    </section>
+
+    <section class="detail-card" aria-labelledby="review-heading">
+      <h2 id="review-heading">Human review</h2>
+      <p class="boundary-copy">Remediation requires an explicit human decision before execution can be requested.</p>
+      @if (item.status === 'pending_approval') {
+        <p class="review-note">A human decision has not yet been recorded.</p>
+        <dl class="metadata-grid">
+          <div><dt>Status</dt><dd>Pending approval</dd></div>
+          <div><dt>Proposed by user ID</dt><dd>{{ item.proposed_by_user_id }}</dd></div>
+        </dl>
+      } @else if (item.status === 'approved') {
+        <p class="review-note">Approval permits an authorized execution request; it does not itself execute the action.</p>
+        <dl class="metadata-grid">
+          <div><dt>Status</dt><dd>Approved</dd></div>
+          <div><dt>Approved by user ID</dt><dd>{{ item.approved_by_user_id }}</dd></div>
+          <div><dt>Approved at</dt><dd><time [attr.datetime]="item.approved_at">{{ item.approved_at | date: 'medium' }}</time></dd></div>
+        </dl>
+      } @else {
+        <p class="review-note">Rejected proposals cannot proceed to execution.</p>
+        <dl class="metadata-grid">
+          <div><dt>Status</dt><dd>Rejected</dd></div>
+          <div><dt>Rejected by user ID</dt><dd>{{ item.rejected_by_user_id }}</dd></div>
+          <div><dt>Rejected at</dt><dd><time [attr.datetime]="item.rejected_at">{{ item.rejected_at | date: 'medium' }}</time></dd></div>
+          <div class="full-width"><dt>Rejection reason</dt><dd class="plain-reason">{{ item.rejection_reason }}</dd></div>
+        </dl>
+      }
+    </section>
+
+    <section class="detail-card" aria-labelledby="execution-heading" [attr.aria-busy]="executionState() === 'loading'">
+      <h2 id="execution-heading">Execution</h2>
+      @if (item.status === 'pending_approval') {
+        <p>Execution is unavailable until this proposal is approved.</p>
+      } @else if (item.status === 'rejected') {
+        <p>This rejected proposal cannot be executed.</p>
+      } @else if (executionState() === 'loading') {
+        <div role="status" aria-live="polite">
+          <mat-progress-bar mode="indeterminate" /><p>Loading execution status…</p>
+        </div>
+      } @else if (executionState() === 'missing') {
+        <p role="status">No execution has been requested for this approved proposal.</p>
+      } @else if (executionState() === 'error') {
+        <div role="alert">
+          <p>Execution status could not be loaded.</p>
+          <button mat-stroked-button type="button" (click)="refresh()">Refresh</button>
+        </div>
+      } @else if (execution(); as record) {
+        <p class="execution-status">Status: {{ executionLabels[record.status] }}</p>
+        @if (record.status === 'outcome_unknown') {
+          <p>The final actuator outcome could not be determined from the durable execution record.</p>
+        } @else if (record.status === 'failed') {
+          <p>The durable execution is recorded as failed.</p>
+        }
+        <dl class="metadata-grid">
+          <div><dt>Action</dt><dd>{{ actionLabels[record.action_kind] }}</dd></div>
+          <div><dt>Target</dt><dd>{{ record.target }}</dd></div>
+          <div><dt>Requested by user ID</dt><dd>{{ record.requested_by_user_id }}</dd></div>
+          <div><dt>Requested at</dt><dd><time [attr.datetime]="record.requested_at">{{ record.requested_at | date: 'medium' }}</time></dd></div>
+          @if (record.completed_at) {
+            <div><dt>Completed at</dt><dd><time [attr.datetime]="record.completed_at">{{ record.completed_at | date: 'medium' }}</time></dd></div>
+          }
+          <div><dt>Updated</dt><dd><time [attr.datetime]="record.updated_at">{{ record.updated_at | date: 'medium' }}</time></dd></div>
+        </dl>
+      }
+    </section>
+  }
+</section>

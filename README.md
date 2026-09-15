@@ -18,8 +18,9 @@ Incident through server-authoritative lifecycle transitions; arbitrary status
 editing and reopening are not supported. The detail view keeps deterministic
 triage as the authoritative priority baseline and persisted AI enrichment as
 advisory only. Incident list filters and page position are preserved in the URL
-and through list-to-detail navigation. Remediation data views remain later Phase 6
-work. RAG, Kubernetes, Helm, Terraform, and AWS are planned directions.
+and through list-to-detail navigation. The read-only Remediation workspace now
+shows a proposal queue, detail, human review attribution, and durable execution
+status. RAG, Kubernetes, Helm, Terraform, and AWS are planned directions.
 
 ## Prerequisites
 
@@ -90,7 +91,12 @@ filters, server-side pagination, and URL-preserved filter and page state. On the
 detail view, viewers remain read-only; operators and admins may acknowledge open
 Incidents and resolve acknowledged Incidents. The server response supplies every
 lifecycle state and attribution update. Deterministic triage remains authoritative,
-and AI enrichment remains advisory. Remediation remains a placeholder.
+and AI enrichment remains advisory. The read-only Remediation workspace includes
+a URL-backed proposal queue, proposal detail, human review attribution, and
+execution status. Proposal creation,
+approval, rejection, and execution requests are not exposed in this slice. Approval
+does not automatically execute remediation: execution is a distinct controlled
+step. An unknown execution outcome remains distinct from success and failure.
 
 Use Node.js 24.15.0 or a later 24.x release and npm 11.13.0 or a later 11.x
 release. Start the local backend at <http://127.0.0.1:8000> first, using the

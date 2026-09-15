@@ -42,6 +42,14 @@ export const routes: Routes = [
           ),
         title: 'Remediation · SignalForge',
       },
+      {
+        path: 'remediation/:proposalId',
+        loadComponent: () =>
+          import('./features/remediation/remediation-detail.component').then(
+            (component) => component.RemediationDetailComponent,
+          ),
+        title: 'Remediation proposal detail · SignalForge',
+      },
     ],
   },
   { path: '**', redirectTo: '' },

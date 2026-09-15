@@ -1,0 +1,156 @@
+<section class="remediation-page" aria-labelledby="remediation-title">
+  <header class="page-heading">
+    <p class="eyebrow">Operations / Remediation workspace</p>
+    <h1 id="remediation-title">Remediation proposals</h1>
+    <p>Review human decisions and durable execution status. Newest proposals appear first.</p>
+  </header>
+
+  <form class="filter-panel" [formGroup]="filterForm" (ngSubmit)="applyFilters()"
+    aria-labelledby="filter-heading" novalidate>
+    <div class="filter-heading">
+      <div><h2 id="filter-heading">Filter proposals</h2><p>Choose criteria, then apply them to the queue.</p></div>
+      @if (hasActiveFilters()) { <span class="active-filter-mark">Filtered view</span> }
+    </div>
+    <div class="filter-grid">
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Status</mat-label>
+        <mat-select formControlName="status">
+          <mat-option [value]="null">Any status</mat-option>
+          @for (status of statuses; track status.value) {
+            <mat-option [value]="status.value">{{ status.label }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Action</mat-label>
+        <mat-select formControlName="actionKind">
+          <mat-option [value]="null">Any action</mat-option>
+          @for (action of actions; track action.value) {
+            <mat-option [value]="action.value">{{ action.label }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Target</mat-label>
+        <input matInput formControlName="target" maxlength="101" autocomplete="off"
+          [attr.aria-describedby]="targetError() ? 'target-error target-hint' : 'target-hint'"
+          [attr.aria-invalid]="targetError() ? 'true' : null" />
+        <mat-hint id="target-hint">Exact target</mat-hint>
+      </mat-form-field>
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Incident ID</mat-label>
+        <input matInput formControlName="incidentId" autocomplete="off"
+          [attr.aria-describedby]="incidentIdError() ? 'incident-id-error' : null"
+          [attr.aria-invalid]="incidentIdError() ? 'true' : null" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Proposed by user ID</mat-label>
+        <input matInput formControlName="proposedByUserId" autocomplete="off"
+          [attr.aria-describedby]="proposedByUserIdError() ? 'proposer-id-error' : null"
+          [attr.aria-invalid]="proposedByUserIdError() ? 'true' : null" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Created from</mat-label>
+        <input matInput type="datetime-local" step="0.001" formControlName="createdFrom"
+          [attr.aria-describedby]="dateRangeError() ? 'date-range-error' : null"
+          [attr.aria-invalid]="dateRangeError() ? 'true' : null" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Created to</mat-label>
+        <input matInput type="datetime-local" step="0.001" formControlName="createdTo"
+          [attr.aria-describedby]="dateRangeError() ? 'date-range-error' : null"
+          [attr.aria-invalid]="dateRangeError() ? 'true' : null" />
+      </mat-form-field>
+    </div>
+    @if (incidentIdError(); as error) { <p id="incident-id-error" class="validation-error" role="alert">{{ error }}</p> }
+    @if (proposedByUserIdError(); as error) { <p id="proposer-id-error" class="validation-error" role="alert">{{ error }}</p> }
+    @if (targetError(); as error) { <p id="target-error" class="validation-error" role="alert">{{ error }}</p> }
+    @if (dateRangeError(); as error) { <p id="date-range-error" class="validation-error" role="alert">{{ error }}</p> }
+    <div class="filter-actions">
+      <button mat-flat-button type="submit">Apply filters</button>
+      <button mat-button type="button" (click)="clearFilters()">Clear filters</button>
+    </div>
+  </form>
+
+  <section class="list-panel" aria-labelledby="queue-heading" [attr.aria-busy]="loading()">
+    <div class="list-heading"><h2 id="queue-heading">Proposal queue</h2></div>
+    @if (loading()) {
+      <div class="loading-state" role="status" aria-live="polite">
+        <mat-progress-bar mode="indeterminate" /><p>Loading remediation proposals…</p>
+      </div>
+    } @else if (loadError()) {
+      <div class="message-state error-state" role="alert">
+        <h3>Remediation proposals could not be loaded.</h3>
+        <button mat-stroked-button type="button" (click)="retry()">Retry</button>
+      </div>
+    } @else if (response(); as result) {
+      @if (result.total === 0) {
+        <div class="message-state empty-state" role="status">
+          @if (hasActiveFilters()) {
+            <h3>No remediation proposals match the selected filters.</h3>
+            <button mat-stroked-button type="button" (click)="clearFilters()">Clear filters</button>
+          } @else {
+            <h3>No remediation proposals are currently available.</h3>
+          }
+        </div>
+      } @else {
+        <div class="table-scroll">
+          <table mat-table [dataSource]="result.items" aria-label="Remediation proposals">
+            <ng-container matColumnDef="status">
+              <th mat-header-cell *matHeaderCellDef>Status</th>
+              <td mat-cell *matCellDef="let proposal">
+                <span class="status-badge" [class]="'status-badge status-' + proposal.status">
+                  {{ statusLabel(proposal.status) }}</span>
+              </td>
+            </ng-container>
+            <ng-container matColumnDef="action">
+              <th mat-header-cell *matHeaderCellDef>Action</th>
+              <td mat-cell *matCellDef="let proposal">
+                <a class="proposal-link" [routerLink]="['/remediation', proposal.id]"
+                  [queryParams]="route.snapshot.queryParams"
+                  [attr.aria-label]="actionLabel(proposal.action_kind) + ' · ' + proposal.target + ', proposal details'">
+                  {{ actionLabel(proposal.action_kind) }} · {{ proposal.target }}
+                </a>
+              </td>
+            </ng-container>
+            <ng-container matColumnDef="target">
+              <th mat-header-cell *matHeaderCellDef>Target</th>
+              <td mat-cell *matCellDef="let proposal" class="wrap-text">{{ proposal.target }}</td>
+            </ng-container>
+            <ng-container matColumnDef="incident">
+              <th mat-header-cell *matHeaderCellDef>Incident</th>
+              <td mat-cell *matCellDef="let proposal">
+                <span [attr.title]="proposal.incident_id" [attr.aria-label]="'Incident ID ' + proposal.incident_id">
+                  {{ compactId(proposal.incident_id) }}</span>
+              </td>
+            </ng-container>
+            <ng-container matColumnDef="proposer">
+              <th mat-header-cell *matHeaderCellDef>Proposed by</th>
+              <td mat-cell *matCellDef="let proposal">
+                <span [attr.title]="proposal.proposed_by_user_id"
+                  [attr.aria-label]="'Proposed by user ID ' + proposal.proposed_by_user_id">
+                  {{ compactId(proposal.proposed_by_user_id) }}</span>
+              </td>
+            </ng-container>
+            <ng-container matColumnDef="created">
+              <th mat-header-cell *matHeaderCellDef>Created</th>
+              <td mat-cell *matCellDef="let proposal">
+                <time [attr.datetime]="proposal.created_at" [attr.title]="proposal.created_at">
+                  {{ proposal.created_at | date: 'medium' }}</time>
+              </td>
+            </ng-container>
+            <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+            <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+          </table>
+        </div>
+      }
+      <div class="pagination-row">
+        <span class="range-summary" aria-live="polite">{{ rangeSummary(result) }}</span>
+        <mat-paginator aria-label="Remediation proposal pagination" [length]="result.total"
+          [pageIndex]="query().offset / query().limit" [pageSize]="query().limit"
+          [pageSizeOptions]="pageSizes" [showFirstLastButtons]="true"
+          (page)="changePage($event)" />
+      </div>
+    }
+  </section>
+</section>
