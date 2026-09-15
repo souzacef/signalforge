@@ -1,0 +1,88 @@
+<div class="shell">
+  <mat-toolbar class="topbar">
+    <button
+      mat-button
+      class="mobile-menu"
+      type="button"
+      aria-label="Open navigation"
+      [attr.aria-expanded]="mobileNavOpen()"
+      aria-controls="primary-navigation"
+      (click)="mobileNavOpen.set(!mobileNavOpen())"
+    >
+      <span class="menu-icon" aria-hidden="true">☰</span>
+    </button>
+
+    <a class="product" routerLink="/incidents" aria-label="SignalForge home">
+      <span class="product-mark" aria-hidden="true">SF</span>
+      <span>
+        <strong>SignalForge</strong>
+        <small>Operator console</small>
+      </span>
+    </a>
+
+    <span class="topbar-spacer"></span>
+    <span class="workspace-label">Operations workspace</span>
+    <span class="topbar-indicator" aria-hidden="true"></span>
+  </mat-toolbar>
+
+  <mat-sidenav-container class="workspace">
+    <mat-sidenav
+      id="primary-navigation"
+      mode="over"
+      position="start"
+      [opened]="mobileNavOpen()"
+      (closedStart)="closeMobileNav()"
+      aria-label="Mobile primary navigation"
+      class="mobile-sidenav"
+    >
+      <nav aria-label="Primary navigation">
+        <a routerLink="/incidents" routerLinkActive="active" (click)="closeMobileNav()">
+          <span class="nav-glyph" aria-hidden="true">▤</span>
+          Incidents
+        </a>
+        <a routerLink="/remediation" routerLinkActive="active" (click)="closeMobileNav()">
+          <span class="nav-glyph" aria-hidden="true">◇</span>
+          Remediation
+        </a>
+      </nav>
+      <div class="mobile-identity">
+        @if (currentUser(); as user) {
+          <strong>{{ user.email }}</strong>
+          <span>{{ roleLabels[user.role] }}</span>
+        }
+        <button mat-button type="button" (click)="logout()">Sign out</button>
+      </div>
+    </mat-sidenav>
+
+    <mat-sidenav-content>
+      <div class="workspace-grid">
+        <aside class="sidebar">
+          <nav aria-label="Primary navigation">
+            <span class="nav-heading">Workspace</span>
+            <a routerLink="/incidents" routerLinkActive="active">
+              <span class="nav-glyph" aria-hidden="true">▤</span>
+              <span>Incidents</span>
+            </a>
+            <a routerLink="/remediation" routerLinkActive="active">
+              <span class="nav-glyph" aria-hidden="true">◇</span>
+              <span>Remediation</span>
+            </a>
+          </nav>
+
+          <div class="sidebar-footer">
+            <span class="footer-label">Signed in as</span>
+            @if (currentUser(); as user) {
+              <strong class="user-email">{{ user.email }}</strong>
+              <span class="user-role">{{ roleLabels[user.role] }}</span>
+            }
+            <button mat-button type="button" (click)="logout()">Sign out</button>
+          </div>
+        </aside>
+
+        <main id="main-content" class="content">
+          <router-outlet />
+        </main>
+      </div>
+    </mat-sidenav-content>
+  </mat-sidenav-container>
+</div>

@@ -1,0 +1,17 @@
+<section class="page" [attr.aria-labelledby]="section() + '-title'">
+  <header class="page-header">
+    <p class="eyebrow">Operations / {{ section() }}</p>
+    <h1 [id]="section() + '-title'">{{ title() }}</h1>
+    <p>{{ description() }}</p>
+  </header>
+
+  <div class="placeholder">
+    <div class="placeholder-symbol" aria-hidden="true">{{ symbol() }}</div>
+    <div>
+      <span class="state">Foundation ready</span>
+      <h2>Workspace prepared</h2>
+      <p>{{ nextSlice() }}</p>
+      <span class="phase-label">Phase 6a · Authentication & shell</span>
+    </div>
+  </div>
+</section>
