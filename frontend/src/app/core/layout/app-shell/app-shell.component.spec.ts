@@ -41,6 +41,33 @@ describe('AppShellComponent', () => {
     expect(text).toContain('Operator');
   });
 
+  it('renders overview first in desktop and mobile navigation and links the product home there', () => {
+    const fixture = TestBed.createComponent(AppShellComponent);
+    fixture.detectChanges();
+    const element = fixture.nativeElement as HTMLElement;
+    const home = element.querySelector<HTMLAnchorElement>('a.product');
+    expect(home?.getAttribute('href')).toBe('/overview');
+    expect(home?.getAttribute('aria-label')).toBe('SignalForge home');
+
+    const navigations = element.querySelectorAll<HTMLElement>(
+      'nav[aria-label="Primary navigation"]',
+    );
+    expect(navigations).toHaveLength(2);
+    for (const navigation of navigations) {
+      const links = [...navigation.querySelectorAll<HTMLAnchorElement>('a')];
+      expect(links.map((link) => link.textContent?.replace(/\s+/g, ''))).toEqual([
+        '⌂Overview',
+        '▤Incidents',
+        '◇Remediation',
+      ]);
+      expect(links.map((link) => link.getAttribute('href'))).toEqual([
+        '/overview',
+        '/incidents',
+        '/remediation',
+      ]);
+    }
+  });
+
   it('logs out and returns to login', () => {
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
     const fixture = TestBed.createComponent(AppShellComponent);

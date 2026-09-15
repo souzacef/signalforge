@@ -17,7 +17,15 @@ export const routes: Routes = [
         (component) => component.AppShellComponent,
       ),
     children: [
-      { path: '', pathMatch: 'full', redirectTo: 'incidents' },
+      { path: '', pathMatch: 'full', redirectTo: 'overview' },
+      {
+        path: 'overview',
+        loadComponent: () =>
+          import('./features/overview/overview.component').then(
+            (component) => component.OverviewComponent,
+          ),
+        title: 'Overview · SignalForge',
+      },
       {
         path: 'incidents',
         loadComponent: () =>
