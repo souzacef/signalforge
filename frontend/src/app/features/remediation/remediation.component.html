@@ -20,7 +20,7 @@
       <div class="create-grid">
         <mat-form-field appearance="outline" subscriptSizing="dynamic">
           <mat-label>Incident ID</mat-label>
-          <input matInput formControlName="incidentId" autocomplete="off" [readonly]="createState() === 'creating'"
+          <input matInput formControlName="incidentId" autocomplete="off" autofocus [readonly]="createState() === 'creating'"
             [attr.aria-describedby]="createIncidentError() ? 'create-incident-error' : null"
             [attr.aria-invalid]="createIncidentError() ? 'true' : null" />
         </mat-form-field>
@@ -140,7 +140,12 @@
           }
         </div>
       } @else {
-        <div class="table-scroll">
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="region"
+          aria-label="Remediation proposal queue table"
+        >
           <table mat-table [dataSource]="result.items" aria-label="Remediation proposals">
             <ng-container matColumnDef="status">
               <th mat-header-cell *matHeaderCellDef>Status</th>

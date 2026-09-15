@@ -32,7 +32,6 @@ table { width: 100%; min-width: 900px; background: transparent; }
 .mat-mdc-header-cell { color: var(--sf-text-muted); font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .mat-mdc-cell { height: 64px; border-color: var(--sf-border); color: var(--sf-text); font-size: .82rem; }
 .proposal-link { color: var(--sf-accent); font-weight: 700; overflow-wrap: anywhere; }
-.proposal-link:focus-visible { outline: 2px solid var(--sf-accent); outline-offset: 3px; }
 .wrap-text { overflow-wrap: anywhere; }
 .status-badge { display: inline-flex; align-items: center; min-height: 24px; border: 1px solid var(--sf-border-strong);
   border-radius: 999px; padding: 2px 9px; color: #c5d2df; background: var(--sf-surface-raised);

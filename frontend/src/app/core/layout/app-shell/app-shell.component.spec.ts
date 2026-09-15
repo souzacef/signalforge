@@ -68,6 +68,36 @@ describe('AppShellComponent', () => {
     }
   });
 
+  it('provides a skip link and a programmatically focusable main target', () => {
+    const fixture = TestBed.createComponent(AppShellComponent);
+    fixture.detectChanges();
+    const element = fixture.nativeElement as HTMLElement;
+    const skipLink = element.querySelector<HTMLAnchorElement>('a.skip-link');
+    const main = element.querySelector<HTMLElement>('main#main-content');
+
+    expect(skipLink?.textContent).toContain('Skip to main content');
+    expect(skipLink?.getAttribute('href')).toBe('#main-content');
+    expect(main?.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('updates the mobile navigation toggle name and expanded state', () => {
+    const fixture = TestBed.createComponent(AppShellComponent);
+    fixture.detectChanges();
+    const toggle = (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>(
+      'button.mobile-menu',
+    );
+
+    expect(toggle?.getAttribute('aria-label')).toBe('Open navigation');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle?.getAttribute('aria-controls')).toBe('primary-navigation');
+
+    toggle?.click();
+    fixture.detectChanges();
+
+    expect(toggle?.getAttribute('aria-label')).toBe('Close navigation');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('logs out and returns to login', () => {
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
     const fixture = TestBed.createComponent(AppShellComponent);

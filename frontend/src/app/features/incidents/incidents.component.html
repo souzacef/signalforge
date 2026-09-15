@@ -131,7 +131,7 @@
           </div>
         </div>
       } @else {
-        <div class="table-scroll">
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Incident queue table">
           <table mat-table [dataSource]="result.items" aria-label="Incidents">
             <ng-container matColumnDef="severity">
               <th mat-header-cell *matHeaderCellDef>Severity</th>

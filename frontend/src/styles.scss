@@ -78,7 +78,9 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -89,6 +91,10 @@ a {
 :focus-visible {
   outline: 3px solid var(--sf-focus);
   outline-offset: 3px;
+}
+
+.table-scroll:focus-visible {
+  outline-offset: -3px;
 }
 
 ::selection {
