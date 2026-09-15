@@ -204,6 +204,20 @@ describe('RemediationComponent', () => {
     expect(harness.routeNativeElement?.textContent).toContain('1–20 of 57 proposals');
   });
 
+  it('makes the rendered proposal table scroll region keyboard accessible', async () => {
+    const { harness } = await open();
+    const scrollRegion = harness.routeNativeElement?.querySelector<HTMLElement>('.table-scroll');
+
+    expect(scrollRegion?.getAttribute('tabindex')).toBe('0');
+    expect(scrollRegion?.getAttribute('role')).toBe('region');
+    expect(scrollRegion?.getAttribute('aria-label')).toBe(
+      'Remediation proposal queue table',
+    );
+    expect(scrollRegion?.querySelector('table')?.getAttribute('aria-label')).toBe(
+      'Remediation proposals',
+    );
+  });
+
   it('distinguishes unfiltered and filtered empty queues', async () => {
     listProposals.mockReturnValue(of(response({ items: [], total: 0 })));
     const { harness, router } = await open();

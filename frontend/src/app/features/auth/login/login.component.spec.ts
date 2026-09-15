@@ -46,6 +46,33 @@ describe('LoginComponent', () => {
     expect(component.form.valid).toBe(true);
   });
 
+  it('associates validation messages only with touched invalid controls', () => {
+    const fixture = TestBed.createComponent(LoginComponent);
+    fixture.detectChanges();
+    const element = fixture.nativeElement as HTMLElement;
+    const email = element.querySelector<HTMLInputElement>('#email');
+    const password = element.querySelector<HTMLInputElement>('#password');
+
+    expect(email?.hasAttribute('aria-describedby')).toBe(false);
+    expect(email?.hasAttribute('aria-invalid')).toBe(false);
+    expect(password?.hasAttribute('aria-describedby')).toBe(false);
+    expect(password?.hasAttribute('aria-invalid')).toBe(false);
+    expect(element.querySelector('#email-error')).toBeNull();
+    expect(element.querySelector('#password-error')).toBeNull();
+
+    fixture.componentInstance.submit();
+    fixture.detectChanges();
+
+    expect(email?.getAttribute('aria-describedby')).toBe('email-error');
+    expect(email?.getAttribute('aria-invalid')).toBe('true');
+    expect(element.querySelector('#email-error')?.textContent).toContain('Email is required.');
+    expect(password?.getAttribute('aria-describedby')).toBe('password-error');
+    expect(password?.getAttribute('aria-invalid')).toBe('true');
+    expect(element.querySelector('#password-error')?.textContent).toContain(
+      'Password is required.',
+    );
+  });
+
   it('shows progress while submitting and navigates on success', async () => {
     const response = new Subject<User>();
     login.mockReturnValue(response.asObservable());
@@ -56,7 +83,12 @@ describe('LoginComponent', () => {
     component.submit();
     fixture.detectChanges();
     expect(component.isSubmitting()).toBe(true);
-    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Signing in');
+    const submit = (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>(
+      'button[type="submit"]',
+    );
+    expect(submit?.getAttribute('aria-busy')).toBe('true');
+    expect(submit?.textContent).toContain('Signing in');
+    expect(submit?.querySelector('mat-spinner')?.getAttribute('aria-hidden')).toBe('true');
 
     response.next(user);
     response.complete();
@@ -77,6 +109,7 @@ describe('LoginComponent', () => {
     const text = (fixture.nativeElement as HTMLElement).textContent;
     expect(text).toContain('The email or password is incorrect.');
     expect(text).not.toContain('HttpErrorResponse');
+    expect((fixture.nativeElement as HTMLElement).querySelector('[role="alert"]')).not.toBeNull();
     expect(component.isSubmitting()).toBe(false);
   });
 });

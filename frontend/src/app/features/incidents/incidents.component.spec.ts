@@ -141,6 +141,16 @@ describe('IncidentsComponent', () => {
     expect(text).toContain('1–20 of 137 incidents');
   });
 
+  it('makes the rendered incident table scroll region keyboard accessible', async () => {
+    const { harness } = await open();
+    const scrollRegion = harness.routeNativeElement?.querySelector<HTMLElement>('.table-scroll');
+
+    expect(scrollRegion?.getAttribute('tabindex')).toBe('0');
+    expect(scrollRegion?.getAttribute('role')).toBe('region');
+    expect(scrollRegion?.getAttribute('aria-label')).toBe('Incident queue table');
+    expect(scrollRegion?.querySelector('table')?.getAttribute('aria-label')).toBe('Incidents');
+  });
+
   it('distinguishes unfiltered empty data from filtered no-match data', async () => {
     listIncidents.mockReturnValue(of(response({ items: [], total: 0 })));
     const unfiltered = await open();

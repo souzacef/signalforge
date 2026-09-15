@@ -99,7 +99,7 @@
               <h3 id="resolve-confirmation-heading">Resolve this incident?</h3>
               <p>This marks the incident resolved and completes its lifecycle.</p>
               <div class="lifecycle-actions">
-                <button mat-flat-button type="button" (click)="confirmResolve()" [disabled]="mutationState() !== 'idle'">Confirm resolve</button>
+                <button mat-flat-button type="button" autofocus (click)="confirmResolve()" [disabled]="mutationState() !== 'idle'">Confirm resolve</button>
                 <button mat-stroked-button type="button" (click)="cancelResolve()" [disabled]="mutationState() !== 'idle'">Cancel</button>
               </div>
             </div>

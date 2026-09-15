@@ -27,7 +27,9 @@
           type="email"
           formControlName="email"
           autocomplete="username"
-          aria-describedby="email-error"
+          [attr.aria-invalid]="
+            form.controls.email.touched && form.controls.email.invalid ? 'true' : null
+          "
         />
         @if (form.controls.email.touched && form.controls.email.hasError('required')) {
           <mat-error id="email-error">Email is required.</mat-error>
@@ -44,7 +46,9 @@
           type="password"
           formControlName="password"
           autocomplete="current-password"
-          aria-describedby="password-error"
+          [attr.aria-invalid]="
+            form.controls.password.touched && form.controls.password.invalid ? 'true' : null
+          "
         />
         @if (form.controls.password.touched && form.controls.password.hasError('required')) {
           <mat-error id="password-error">Password is required.</mat-error>
@@ -65,7 +69,7 @@
         [attr.aria-busy]="isSubmitting()"
       >
         @if (isSubmitting()) {
-          <mat-spinner diameter="18" aria-label="Signing in"></mat-spinner>
+          <mat-spinner diameter="18" aria-hidden="true"></mat-spinner>
           <span>Signing in…</span>
         } @else {
           <span>Continue</span>

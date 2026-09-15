@@ -8,6 +8,25 @@
   background: var(--sf-bg);
 }
 
+.skip-link {
+  position: fixed;
+  z-index: 10;
+  top: 10px;
+  left: 12px;
+  transform: translateY(calc(-100% - 16px));
+  border: 1px solid var(--sf-accent);
+  border-radius: var(--sf-radius-sm);
+  padding: 8px 12px;
+  color: var(--sf-text);
+  background: var(--sf-surface-raised);
+  font-weight: 700;
+  text-decoration: none;
+
+  &:focus-visible {
+    transform: translateY(0);
+  }
+}
+
 .topbar {
   position: relative;
   z-index: 2;

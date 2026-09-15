@@ -159,6 +159,11 @@
   flex-wrap: wrap;
   color: var(--sf-text-muted);
   font-size: 0.72rem;
+
+  > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
 }
 
 .row-meta > * + *::before {

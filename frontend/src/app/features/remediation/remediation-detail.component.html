@@ -96,7 +96,7 @@
             <h3 id="approval-confirm-heading">Approve this remediation proposal?</h3>
             <p>Approval allows an authorized execution request. It does not execute the remediation.</p>
             <div class="decision-actions">
-              <button mat-flat-button type="button" (click)="confirmApproval()"
+              <button mat-flat-button type="button" autofocus (click)="confirmApproval()"
                 [disabled]="mutationState() !== 'idle'">Confirm approval</button>
               <button mat-button type="button" (click)="cancelDecision()"
                 [disabled]="mutationState() !== 'idle'">Cancel</button>
@@ -108,7 +108,7 @@
             <h3 id="rejection-heading">Reject this remediation proposal?</h3>
             <mat-form-field appearance="outline" subscriptSizing="dynamic">
               <mat-label>Rejection reason</mat-label>
-              <textarea matInput formControlName="reason" rows="4" maxlength="1001"
+              <textarea matInput formControlName="reason" rows="4" maxlength="1001" autofocus
                 [readonly]="mutationState() !== 'idle'"
                 [attr.aria-describedby]="rejectionError() ? 'rejection-error' : null"
                 [attr.aria-invalid]="rejectionError() ? 'true' : null"></textarea>
@@ -160,7 +160,7 @@
               <div><dt>Target</dt><dd>{{ item.target }}</dd></div>
             </dl>
             <div class="decision-actions">
-              <button mat-flat-button type="button" (click)="confirmExecutionRequest()" [disabled]="mutationState() !== 'idle'">Confirm execution request</button>
+              <button mat-flat-button type="button" autofocus (click)="confirmExecutionRequest()" [disabled]="mutationState() !== 'idle'">Confirm execution request</button>
               <button mat-button type="button" (click)="cancelExecutionRequest()" [disabled]="mutationState() !== 'idle'">Cancel</button>
             </div>
           </div>
