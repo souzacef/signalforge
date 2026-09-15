@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import json
 from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
@@ -10,6 +11,10 @@ import pytest
 from pydantic import ValidationError
 
 from signalforge.core.config import RemediationExecutionSettings
+from signalforge.observability.metrics import (
+    RemediationExecutorMetricResult,
+    RemediationExecutorMetrics,
+)
 from signalforge.remediation.errors import (
     RemediationExecutionRejectedError,
     RemediationExecutionTimeoutError,
@@ -412,3 +417,165 @@ def test_execution_attempt_lease_defaults_to_45_seconds() -> None:
     configured = settings()
     assert configured.attempt_lease_seconds == 45.0
     assert configured.attempt_lease_seconds > configured.request_timeout_seconds
+
+
+class RaisingRestartAdapter:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def restart(
+        self, remediation_command: RemediationCommand
+    ) -> RemediationExecutionResult:
+        self.calls += 1
+        raise self.error
+
+
+def executor_metric_value(
+    metrics: RemediationExecutorMetrics,
+    name: str,
+    result: RemediationExecutorMetricResult,
+) -> float | None:
+    return metrics.registry.get_sample_value(name, {"result": result.value})
+
+
+async def test_executor_success_records_one_call_and_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metrics = RemediationExecutorMetrics()
+    adapter = RecordingRestartAdapter()
+    executor = AllowlistedHttpRemediationExecutor(adapter, metrics)
+    times = iter((10.0, 10.25))
+    monkeypatch.setattr(
+        "signalforge.remediation.execution.monotonic", lambda: next(times)
+    )
+    remediation_command = command()
+
+    result = await executor.execute(remediation_command)
+
+    assert result.outcome is RemediationExecutionOutcome.SUCCEEDED
+    assert (
+        executor_metric_value(
+            metrics,
+            "signalforge_remediation_executor_calls_total",
+            RemediationExecutorMetricResult.SUCCESS,
+        )
+        == 1
+    )
+    assert (
+        executor_metric_value(
+            metrics,
+            "signalforge_remediation_executor_duration_seconds_count",
+            RemediationExecutorMetricResult.SUCCESS,
+        )
+        == 1
+    )
+    assert executor_metric_value(
+        metrics,
+        "signalforge_remediation_executor_duration_seconds_sum",
+        RemediationExecutorMetricResult.SUCCESS,
+    ) == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+    ("error", "metric_result"),
+    [
+        (
+            RemediationTargetNotAllowedError("not allowed"),
+            RemediationExecutorMetricResult.TARGET_NOT_ALLOWED,
+        ),
+        (
+            RemediationExecutionRejectedError(400),
+            RemediationExecutorMetricResult.HTTP_REJECTED,
+        ),
+        (
+            RemediationExecutionRejectedError(500),
+            RemediationExecutorMetricResult.HTTP_SERVER_ERROR,
+        ),
+        (
+            RemediationExecutionTimeoutError("timeout"),
+            RemediationExecutorMetricResult.TIMEOUT,
+        ),
+        (
+            RemediationExecutionTransportError("transport"),
+            RemediationExecutorMetricResult.TRANSPORT,
+        ),
+        (asyncio.CancelledError(), RemediationExecutorMetricResult.INTERRUPTED),
+        (RuntimeError("unexpected"), RemediationExecutorMetricResult.UNEXPECTED),
+    ],
+)
+async def test_executor_error_metrics_preserve_original_exception(
+    error: BaseException,
+    metric_result: RemediationExecutorMetricResult,
+) -> None:
+    metrics = RemediationExecutorMetrics()
+    adapter = RaisingRestartAdapter(error)
+    executor = AllowlistedHttpRemediationExecutor(adapter, metrics)
+
+    with pytest.raises(type(error)) as caught:
+        await executor.execute(command())
+
+    assert caught.value is error
+    assert adapter.calls == 1
+    assert (
+        executor_metric_value(
+            metrics,
+            "signalforge_remediation_executor_calls_total",
+            metric_result,
+        )
+        == 1
+    )
+    assert (
+        executor_metric_value(
+            metrics,
+            "signalforge_remediation_executor_duration_seconds_count",
+            metric_result,
+        )
+        == 1
+    )
+
+
+async def test_unsupported_action_metric_preserves_fail_closed_behavior() -> None:
+    metrics = RemediationExecutorMetrics()
+    adapter = RecordingRestartAdapter()
+    executor = AllowlistedHttpRemediationExecutor(adapter, metrics)
+    unsupported = RemediationCommand(
+        proposal_id=uuid4(),
+        action_kind=cast(RemediationActionKind, "stop_service"),
+        target="checkout-api",
+    )
+
+    with pytest.raises(UnsupportedRemediationActionError):
+        await executor.execute(unsupported)
+
+    assert adapter.commands == []
+    assert (
+        executor_metric_value(
+            metrics,
+            "signalforge_remediation_executor_calls_total",
+            RemediationExecutorMetricResult.UNSUPPORTED_ACTION,
+        )
+        == 1
+    )
+
+
+async def test_executor_metric_failure_does_not_change_result_or_exception() -> None:
+    class FailingMetrics:
+        def record(self, **kwargs: object) -> None:
+            raise RuntimeError("metrics unavailable")
+
+    successful = AllowlistedHttpRemediationExecutor(
+        RecordingRestartAdapter(),
+        cast(RemediationExecutorMetrics, FailingMetrics()),
+    )
+    result = await successful.execute(command())
+    assert result.outcome is RemediationExecutionOutcome.SUCCEEDED
+
+    error = RemediationExecutionTimeoutError("original")
+    failing = AllowlistedHttpRemediationExecutor(
+        RaisingRestartAdapter(error),
+        cast(RemediationExecutorMetrics, FailingMetrics()),
+    )
+    with pytest.raises(RemediationExecutionTimeoutError) as caught:
+        await failing.execute(command())
+    assert caught.value is error

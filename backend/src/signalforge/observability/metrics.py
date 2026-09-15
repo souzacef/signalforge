@@ -18,6 +18,22 @@ HTTP_DURATION_BUCKETS: Final = (
     5.0,
     10.0,
 )
+REMEDIATION_EXECUTOR_DURATION_BUCKETS: Final = (
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    15.0,
+    20.0,
+    30.0,
+)
 UNMATCHED_ROUTE: Final = "__unmatched__"
 
 
@@ -68,6 +84,26 @@ class MessageMetricResult(StrEnum):
     DUPLICATE = "duplicate"
     REJECTED = "rejected"
     REQUEUED = "requeued"
+
+
+class RemediationMessageMetricResult(StrEnum):
+    PROCESSED = "processed"
+    DUPLICATE = "duplicate"
+    REJECTED = "rejected"
+    REQUEUED = "requeued"
+    IN_PROGRESS = "in_progress"
+
+
+class RemediationExecutorMetricResult(StrEnum):
+    SUCCESS = "success"
+    TARGET_NOT_ALLOWED = "target_not_allowed"
+    UNSUPPORTED_ACTION = "unsupported_action"
+    HTTP_REJECTED = "http_rejected"
+    HTTP_SERVER_ERROR = "http_server_error"
+    TIMEOUT = "timeout"
+    TRANSPORT = "transport"
+    INTERRUPTED = "interrupted"
+    UNEXPECTED = "unexpected"
 
 
 class ProviderMetricResult(StrEnum):
@@ -151,6 +187,49 @@ class EnrichmentMetrics:
 
     def record(self, result: MessageMetricResult) -> None:
         _safe_increment(self.messages, result=result.value)
+
+
+class RemediationWorkerMetrics:
+    """Process-local remediation consumer delivery outcomes."""
+
+    def __init__(self, registry: CollectorRegistry | None = None) -> None:
+        self.registry = registry if registry is not None else CollectorRegistry()
+        self.messages = Counter(
+            "signalforge_remediation_messages_total",
+            "Final remediation consumer message outcomes.",
+            ("result",),
+            registry=self.registry,
+        )
+
+    def record(self, result: RemediationMessageMetricResult) -> None:
+        _safe_increment(self.messages, result=result.value)
+
+
+class RemediationExecutorMetrics:
+    """Production remediation executor call outcomes and durations."""
+
+    def __init__(self, registry: CollectorRegistry | None = None) -> None:
+        self.registry = registry if registry is not None else CollectorRegistry()
+        self.calls = Counter(
+            "signalforge_remediation_executor_calls_total",
+            "Remediation executor call outcomes.",
+            ("result",),
+            registry=self.registry,
+        )
+        self.duration = Histogram(
+            "signalforge_remediation_executor_duration_seconds",
+            "Remediation executor call duration in seconds.",
+            ("result",),
+            buckets=REMEDIATION_EXECUTOR_DURATION_BUCKETS,
+            registry=self.registry,
+        )
+
+    def record(
+        self, *, result: RemediationExecutorMetricResult, duration: float
+    ) -> None:
+        labels = {"result": result.value}
+        _safe_increment(self.calls, **labels)
+        _safe_observe(self.duration, duration, **labels)
 
 
 class ProviderMetrics:

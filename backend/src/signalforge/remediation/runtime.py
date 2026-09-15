@@ -21,6 +21,7 @@ from aio_pika.abc import (
     AbstractQueueIterator,
 )
 from aio_pika.exceptions import AMQPError, ChannelInvalidStateError
+from opentelemetry.trace import Tracer
 from pamqp.exceptions import PAMQPException
 from pydantic import AmqpDsn, Field, model_validator
 from pydantic_settings import SettingsConfigDict
@@ -33,12 +34,29 @@ from sqlalchemy.ext.asyncio import (
 )
 from yarl import URL
 
-from signalforge.core.config import DatabaseSettings, RemediationExecutionSettings
+from signalforge.core.config import (
+    DatabaseSettings,
+    MetricsHost,
+    MetricsPort,
+    RemediationExecutionSettings,
+    get_tracing_settings,
+)
 from signalforge.db.errors import DatabaseTransportError
+from signalforge.observability.exposition import MetricsHttpServer
 from signalforge.observability.logging import (
     bind_log_context,
     configure_logging,
     delivery_log_context,
+)
+from signalforge.observability.metrics import (
+    RemediationExecutorMetrics,
+    RemediationMessageMetricResult,
+    RemediationWorkerMetrics,
+)
+from signalforge.observability.tracing import (
+    REMEDIATION_WORKER_SERVICE_NAME,
+    TracingRuntime,
+    create_tracing_runtime,
 )
 from signalforge.outbox.dispatching import retry_delay
 from signalforge.outbox.rabbitmq import (
@@ -71,6 +89,8 @@ class RemediationWorkerSettings(DatabaseSettings):
     model_config = SettingsConfigDict(hide_input_in_errors=True)
 
     rabbitmq_url: AmqpDsn
+    metrics_host: MetricsHost = "127.0.0.1"
+    metrics_port: MetricsPort = 9104
     remediation_worker_reconnect_base_seconds: PositiveSeconds = 1
     remediation_worker_reconnect_max_seconds: PositiveSeconds = 30
     remediation_worker_processing_retry_base_seconds: PositiveSeconds = 1
@@ -209,6 +229,32 @@ async def _connect_broker(
     return await RemediationBroker.connect(settings)
 
 
+def _create_worker_tracing_runtime() -> TracingRuntime:
+    try:
+        return create_tracing_runtime(
+            get_tracing_settings(), service_name=REMEDIATION_WORKER_SERVICE_NAME
+        )
+    except Exception as error:
+        logger.error(
+            "tracing startup failed",
+            extra={
+                "event": "tracing_startup_failed",
+                "exception_type": type(error).__name__,
+            },
+        )
+        return TracingRuntime()
+
+
+def _record_message_metric(
+    metrics: RemediationWorkerMetrics,
+    result: RemediationMessageMetricResult,
+) -> None:
+    try:
+        metrics.record(result)
+    except Exception:
+        pass
+
+
 def _backoff_seconds(
     attempt_count: int,
     *,
@@ -320,19 +366,28 @@ async def _run_handler_with_context(
     settings: RemediationWorkerSettings,
     execution_settings: RemediationExecutionSettings,
     stop_event: asyncio.Event,
+    tracer: Tracer | None = None,
 ) -> tuple[ProcessingResult | None, bool]:
     if stop_event.is_set():
         await _requeue_unstarted(message)
         return None, True
 
-    handler_task = asyncio.create_task(
-        handle_message(
+    if tracer is None:
+        handler = handle_message(
             cast(IncomingMessage, message),
             executor,
             session_factory,
             lease_seconds=execution_settings.attempt_lease_seconds,
         )
-    )
+    else:
+        handler = handle_message(
+            cast(IncomingMessage, message),
+            executor,
+            session_factory,
+            lease_seconds=execution_settings.attempt_lease_seconds,
+            tracer=tracer,
+        )
+    handler_task = asyncio.create_task(handler)
     stop_task = asyncio.create_task(stop_event.wait())
     try:
         done, _ = await asyncio.wait(
@@ -371,9 +426,19 @@ async def _run_handler_or_drain(
     settings: RemediationWorkerSettings,
     execution_settings: RemediationExecutionSettings,
     stop_event: asyncio.Event,
+    tracer: Tracer | None = None,
 ) -> tuple[ProcessingResult | None, bool]:
     context = delivery_log_context(message, consumer_name=CONSUMER_NAME)
     with bind_log_context(**context):
+        if tracer is None:
+            return await _run_handler_with_context(
+                message,
+                executor,
+                session_factory,
+                settings,
+                execution_settings,
+                stop_event,
+            )
         return await _run_handler_with_context(
             message,
             executor,
@@ -381,6 +446,7 @@ async def _run_handler_or_drain(
             settings,
             execution_settings,
             stop_event,
+            tracer,
         )
 
 
@@ -392,7 +458,10 @@ async def _consume_connected(
     execution_settings: RemediationExecutionSettings,
     stop_event: asyncio.Event,
     jitter_source: Callable[[], float],
+    metrics: RemediationWorkerMetrics | None = None,
+    tracer: Tracer | None = None,
 ) -> _ConsumeOutcome:
+    pipeline_metrics = metrics or RemediationWorkerMetrics()
     processing_failures = 0
     while not stop_event.is_set():
         database_retry_delay: float | None = None
@@ -410,16 +479,30 @@ async def _consume_connected(
                     message, consumer_name=CONSUMER_NAME
                 )
                 try:
-                    result, stopping = await _run_handler_or_drain(
-                        message,
-                        executor,
-                        session_factory,
-                        settings,
-                        execution_settings,
-                        stop_event,
-                    )
+                    if tracer is None:
+                        result, stopping = await _run_handler_or_drain(
+                            message,
+                            executor,
+                            session_factory,
+                            settings,
+                            execution_settings,
+                            stop_event,
+                        )
+                    else:
+                        result, stopping = await _run_handler_or_drain(
+                            message,
+                            executor,
+                            session_factory,
+                            settings,
+                            execution_settings,
+                            stop_event,
+                            tracer,
+                        )
                 except InvalidEventError as error:
                     processing_failures = 0
+                    _record_message_metric(
+                        pipeline_metrics, RemediationMessageMetricResult.REJECTED
+                    )
                     logger.warning(
                         "remediation worker rejected invalid event",
                         extra={
@@ -433,6 +516,9 @@ async def _consume_connected(
                     continue
                 except (SQLAlchemyError, DatabaseTransportError) as error:
                     processing_failures += 1
+                    _record_message_metric(
+                        pipeline_metrics, RemediationMessageMetricResult.REQUEUED
+                    )
                     database_retry_delay = _backoff_seconds(
                         processing_failures,
                         base_delay=settings.processing_retry_base,
@@ -455,9 +541,12 @@ async def _consume_connected(
 
                 if result is None:
                     return _ConsumeOutcome.STOPPED
-                if stopping:
-                    return _ConsumeOutcome.STOPPED
                 if result is ProcessingResult.IN_PROGRESS:
+                    _record_message_metric(
+                        pipeline_metrics, RemediationMessageMetricResult.IN_PROGRESS
+                    )
+                    if stopping:
+                        return _ConsumeOutcome.STOPPED
                     processing_failures += 1
                     delay = _backoff_seconds(
                         processing_failures,
@@ -479,6 +568,14 @@ async def _consume_connected(
                         return _ConsumeOutcome.STOPPED
                     continue
 
+                _record_message_metric(
+                    pipeline_metrics,
+                    RemediationMessageMetricResult.PROCESSED
+                    if result is ProcessingResult.PROCESSED
+                    else RemediationMessageMetricResult.DUPLICATE,
+                )
+                if stopping:
+                    return _ConsumeOutcome.STOPPED
                 processing_failures = 0
                 logger.info(
                     "remediation delivery handled",
@@ -565,15 +662,28 @@ async def run_worker(
     executor: RemediationExecutor | None = None,
     stop_event: asyncio.Event | None = None,
     jitter_source: Callable[[], float] = random,
+    metrics: RemediationWorkerMetrics | None = None,
+    executor_metrics: RemediationExecutorMetrics | None = None,
+    tracer: Tracer | None = None,
+    actuator_tracer: Tracer | None = None,
 ) -> None:
     """Consume sequentially until stopped, owning shared runtime resources."""
     _validate_worker_startup(settings, execution_settings)
     stop = stop_event or asyncio.Event()
+    pipeline_metrics = metrics or RemediationWorkerMetrics()
     client: httpx.AsyncClient | None = None
     if executor is None:
         client = httpx.AsyncClient(follow_redirects=False)
+        production_executor_metrics = executor_metrics or RemediationExecutorMetrics(
+            pipeline_metrics.registry
+        )
         executor = AllowlistedHttpRemediationExecutor(
-            HttpRestartServiceAdapter(execution_settings, client=client)
+            HttpRestartServiceAdapter(
+                execution_settings,
+                client=client,
+                tracer=actuator_tracer,
+            ),
+            metrics=production_executor_metrics,
         )
 
     engine: AsyncEngine | None = None
@@ -625,6 +735,8 @@ async def run_worker(
                     execution_settings,
                     stop,
                     jitter_source,
+                    pipeline_metrics,
+                    tracer,
                 )
             except _BROKER_ERRORS:
                 outcome = _ConsumeOutcome.BROKER_UNAVAILABLE
@@ -680,13 +792,76 @@ async def run_worker(
 async def async_main() -> None:
     settings = RemediationWorkerSettings()  # type: ignore[call-arg]
     execution_settings = RemediationExecutionSettings()
-    stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    installed = install_signal_handlers(loop, stop_event)
+    pipeline_metrics = RemediationWorkerMetrics()
+    executor_metrics = RemediationExecutorMetrics(pipeline_metrics.registry)
+    tracing_runtime = _create_worker_tracing_runtime()
     try:
-        await run_worker(settings, execution_settings, stop_event=stop_event)
+        consumer_tracer = tracing_runtime.get_tracer("signalforge.remediation.consumer")
+        actuator_tracer = tracing_runtime.get_tracer(
+            "signalforge.remediation.http_actuator"
+        )
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        installed = install_signal_handlers(loop, stop_event)
+        metrics_server: MetricsHttpServer | None = None
+        try:
+            try:
+                metrics_server = MetricsHttpServer.start(
+                    pipeline_metrics.registry,
+                    host=settings.metrics_host,
+                    port=settings.metrics_port,
+                )
+            except Exception:
+                logger.warning(
+                    "metrics server could not start",
+                    extra={"event": "metrics_server_start_failed"},
+                )
+            else:
+                logger.info(
+                    "metrics server started",
+                    extra={
+                        "event": "metrics_server_started",
+                        "metrics_host": settings.metrics_host,
+                        "metrics_port": settings.metrics_port,
+                    },
+                )
+            await run_worker(
+                settings,
+                execution_settings,
+                stop_event=stop_event,
+                metrics=pipeline_metrics,
+                executor_metrics=executor_metrics,
+                tracer=consumer_tracer,
+                actuator_tracer=actuator_tracer,
+            )
+        finally:
+            try:
+                if metrics_server is not None:
+                    try:
+                        await asyncio.to_thread(metrics_server.stop)
+                    except Exception:
+                        logger.warning(
+                            "metrics server cleanup failed",
+                            extra={"event": "metrics_server_stop_failed"},
+                        )
+                    else:
+                        logger.info(
+                            "metrics server stopped",
+                            extra={"event": "metrics_server_stopped"},
+                        )
+            finally:
+                remove_signal_handlers(loop, installed)
     finally:
-        remove_signal_handlers(loop, installed)
+        try:
+            await asyncio.to_thread(tracing_runtime.shutdown)
+        except Exception as error:
+            logger.error(
+                "tracing shutdown failed",
+                extra={
+                    "event": "tracing_shutdown_failed",
+                    "exception_type": type(error).__name__,
+                },
+            )
 
 
 def main() -> None:

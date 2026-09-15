@@ -2,9 +2,11 @@
 
 from uuid import uuid4
 
+import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
 from signalforge.observability.metrics import (
+    REMEDIATION_EXECUTOR_DURATION_BUCKETS,
     EnrichmentMetrics,
     IncidentConsumerMetrics,
     MessageMetricResult,
@@ -12,6 +14,10 @@ from signalforge.observability.metrics import (
     OutboxMetrics,
     ProviderMetricResult,
     ProviderMetrics,
+    RemediationExecutorMetricResult,
+    RemediationExecutorMetrics,
+    RemediationMessageMetricResult,
+    RemediationWorkerMetrics,
 )
 from signalforge.outbox.dispatcher import _log_batch
 from signalforge.outbox.dispatching import DispatchErrorCode
@@ -136,3 +142,108 @@ def test_provider_counter_and_duration_share_only_controlled_labels() -> None:
             == 1
         )
     assert metrics.registry is registry
+
+
+def test_remediation_metrics_have_exact_names_and_bounded_result_labels() -> None:
+    worker = RemediationWorkerMetrics()
+    executor = RemediationExecutorMetrics(worker.registry)
+
+    for result in RemediationMessageMetricResult:
+        worker.record(result)
+    for result in RemediationExecutorMetricResult:
+        executor.record(result=result, duration=0.125)
+
+    assert worker.messages._name == "signalforge_remediation_messages"
+    assert worker.messages._labelnames == ("result",)
+    assert executor.calls._name == "signalforge_remediation_executor_calls"
+    assert executor.calls._labelnames == ("result",)
+    assert (
+        executor.duration._name == "signalforge_remediation_executor_duration_seconds"
+    )
+    assert executor.duration._labelnames == ("result",)
+    assert REMEDIATION_EXECUTOR_DURATION_BUCKETS == (
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+        15.0,
+        20.0,
+        30.0,
+    )
+    bucket_bounds = {
+        float(sample.labels["le"])
+        for sample in executor.duration.collect()[0].samples
+        if sample.name == "signalforge_remediation_executor_duration_seconds_bucket"
+        and sample.labels["result"] == "success"
+    }
+    assert bucket_bounds == {
+        *REMEDIATION_EXECUTOR_DURATION_BUCKETS,
+        float("inf"),
+    }
+    assert set(result.value for result in RemediationMessageMetricResult) == {
+        "processed",
+        "duplicate",
+        "rejected",
+        "requeued",
+        "in_progress",
+    }
+    assert set(result.value for result in RemediationExecutorMetricResult) == {
+        "success",
+        "target_not_allowed",
+        "unsupported_action",
+        "http_rejected",
+        "http_server_error",
+        "timeout",
+        "transport",
+        "interrupted",
+        "unexpected",
+    }
+    for result in RemediationMessageMetricResult:
+        assert (
+            worker.registry.get_sample_value(
+                "signalforge_remediation_messages_total", {"result": result.value}
+            )
+            == 1
+        )
+    for result in RemediationExecutorMetricResult:
+        labels = {"result": result.value}
+        assert (
+            worker.registry.get_sample_value(
+                "signalforge_remediation_executor_calls_total", labels
+            )
+            == 1
+        )
+        assert (
+            worker.registry.get_sample_value(
+                "signalforge_remediation_executor_duration_seconds_count", labels
+            )
+            == 1
+        )
+    assert executor.registry is worker.registry
+
+
+def test_remediation_metric_update_failures_are_observational(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = RemediationWorkerMetrics()
+    executor = RemediationExecutorMetrics(worker.registry)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise ValueError("metrics unavailable")
+
+    monkeypatch.setattr(worker.messages, "labels", fail)
+    monkeypatch.setattr(executor.calls, "labels", fail)
+    monkeypatch.setattr(executor.duration, "labels", fail)
+
+    worker.record(RemediationMessageMetricResult.PROCESSED)
+    executor.record(
+        result=RemediationExecutorMetricResult.SUCCESS,
+        duration=0.1,
+    )
