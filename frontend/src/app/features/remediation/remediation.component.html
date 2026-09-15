@@ -5,6 +5,52 @@
     <p>Review human decisions and durable execution status. Newest proposals appear first.</p>
   </header>
 
+  @if (canCreate()) {
+    <div class="create-toggle">
+      <button mat-stroked-button type="button" (click)="openCreate()" [disabled]="createOpen()">
+        New remediation proposal
+      </button>
+    </div>
+  }
+  @if (createOpen() && canCreate()) {
+    <form class="create-panel" [formGroup]="createForm" (ngSubmit)="submitCreate()"
+      aria-labelledby="create-heading" [attr.aria-busy]="createState() === 'creating'" novalidate>
+      <div><h2 id="create-heading">New remediation proposal</h2>
+        <p>Propose a service restart for human review. Creation does not execute the action.</p></div>
+      <div class="create-grid">
+        <mat-form-field appearance="outline" subscriptSizing="dynamic">
+          <mat-label>Incident ID</mat-label>
+          <input matInput formControlName="incidentId" autocomplete="off" [readonly]="createState() === 'creating'"
+            [attr.aria-describedby]="createIncidentError() ? 'create-incident-error' : null"
+            [attr.aria-invalid]="createIncidentError() ? 'true' : null" />
+        </mat-form-field>
+        <div class="fixed-action"><span>Action</span><strong>Restart service</strong></div>
+        <mat-form-field appearance="outline" subscriptSizing="dynamic">
+          <mat-label>Target</mat-label>
+          <input matInput formControlName="target" autocomplete="off" maxlength="101" [readonly]="createState() === 'creating'"
+            [attr.aria-describedby]="createTargetError() ? 'create-target-error create-target-hint' : 'create-target-hint'"
+            [attr.aria-invalid]="createTargetError() ? 'true' : null" />
+          <mat-hint id="create-target-hint">Logical service name, e.g. payments-api</mat-hint>
+        </mat-form-field>
+        <mat-form-field class="create-reason" appearance="outline" subscriptSizing="dynamic">
+          <mat-label>Reason</mat-label>
+          <textarea matInput formControlName="reason" rows="4" maxlength="1001" [readonly]="createState() === 'creating'"
+            [attr.aria-describedby]="createReasonError() ? 'create-reason-error' : null"
+            [attr.aria-invalid]="createReasonError() ? 'true' : null"></textarea>
+        </mat-form-field>
+      </div>
+      @if (createIncidentError(); as error) { <p id="create-incident-error" class="validation-error" role="alert">{{ error }}</p> }
+      @if (createTargetError(); as error) { <p id="create-target-error" class="validation-error" role="alert">{{ error }}</p> }
+      @if (createReasonError(); as error) { <p id="create-reason-error" class="validation-error" role="alert">{{ error }}</p> }
+      @if (createFeedback(); as feedback) { <p class="validation-error" role="alert" aria-live="assertive">{{ feedback }}</p> }
+      @if (createState() === 'creating') { <p role="status" aria-live="polite">Creating proposal…</p> }
+      <div class="create-actions">
+        <button mat-flat-button type="submit" [disabled]="createState() === 'creating'">Create proposal</button>
+        <button mat-button type="button" (click)="cancelCreate()" [disabled]="createState() === 'creating'">Cancel</button>
+      </div>
+    </form>
+  }
+
   <form class="filter-panel" [formGroup]="filterForm" (ngSubmit)="applyFilters()"
     aria-labelledby="filter-heading" novalidate>
     <div class="filter-heading">
@@ -39,7 +85,7 @@
       </mat-form-field>
       <mat-form-field appearance="outline" subscriptSizing="dynamic">
         <mat-label>Incident ID</mat-label>
-        <input matInput formControlName="incidentId" autocomplete="off"
+        <input matInput formControlName="incidentId" autocomplete="off" [readonly]="createState() === 'creating'"
           [attr.aria-describedby]="incidentIdError() ? 'incident-id-error' : null"
           [attr.aria-invalid]="incidentIdError() ? 'true' : null" />
       </mat-form-field>

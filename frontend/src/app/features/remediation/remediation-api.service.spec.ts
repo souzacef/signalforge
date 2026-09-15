@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 import { RemediationApiService } from './remediation-api.service';
 import { DEFAULT_REMEDIATION_LIST_QUERY, RemediationListQuery } from './remediation-list-query';
-import { RemediationExecution, RemediationProposal, RemediationProposalListResponse } from './remediation.models';
+import { RemediationExecution, RemediationProposal, RemediationProposalCreateRequest, RemediationProposalListResponse } from './remediation.models';
 
 const id = '57ed68ac-bc67-493e-a621-f63da52d6b12';
 const proposal: RemediationProposal = {
@@ -57,6 +57,36 @@ describe('RemediationApiService', () => {
     });
     request.flush({ items: [proposal], limit: 50, offset: 100, total: 101 });
     await expect(result).resolves.toMatchObject({ items: [proposal], total: 101 });
+  });
+
+  it('creates a typed proposal with the exact request body', async () => {
+    const body: RemediationProposalCreateRequest = {
+      incident_id: id, action_kind: 'restart_service', target: 'payments-api', reason: 'Human reason',
+    };
+    const result = firstValueFrom(api.createProposal(body));
+    const request = http.expectOne('/api/v1/remediation-proposals');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual(body);
+    request.flush(proposal);
+    await expect(result).resolves.toEqual(proposal);
+  });
+
+  it('approves without domain payload and rejects with an exact reason body', async () => {
+    const approved = { ...proposal, status: 'approved' as const };
+    const approval = firstValueFrom(api.approveProposal(id));
+    const approveRequest = http.expectOne(`/api/v1/remediation-proposals/${id}/approve`);
+    expect(approveRequest.request.method).toBe('POST');
+    expect(approveRequest.request.body).toBeNull();
+    approveRequest.flush(approved);
+    await expect(approval).resolves.toEqual(approved);
+
+    const rejected = { ...proposal, status: 'rejected' as const };
+    const rejection = firstValueFrom(api.rejectProposal(id, { rejection_reason: 'unsafe target' }));
+    const rejectRequest = http.expectOne(`/api/v1/remediation-proposals/${id}/reject`);
+    expect(rejectRequest.request.method).toBe('POST');
+    expect(rejectRequest.request.body).toEqual({ rejection_reason: 'unsafe target' });
+    rejectRequest.flush(rejected);
+    await expect(rejection).resolves.toEqual(rejected);
   });
 
   it('reads typed proposal and execution detail from relative GET endpoints', async () => {

@@ -51,3 +51,24 @@ time { color: #c0cedd; white-space: nowrap; }
   .pagination-row { flex-wrap: wrap; padding: 12px; }
   .pagination-row mat-paginator { width: 100%; }
 }
+
+.create-toggle { display: flex; justify-content: flex-start; }
+.create-panel { min-width: 0; display: grid; gap: 18px; padding: 20px;
+  border: 1px solid var(--sf-border); border-radius: var(--sf-radius-md); background: var(--sf-surface);
+  h2 { margin: 0; font-size: 1rem; }
+  p { margin: 6px 0 0; color: var(--sf-text-muted); overflow-wrap: anywhere; }
+}
+.create-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
+  mat-form-field { width: 100%; min-width: 0; }
+  .create-reason { grid-column: 1 / -1; }
+  textarea { min-height: 100px; resize: vertical; }
+}
+.fixed-action { min-width: 0; display: grid; align-content: center; gap: 4px;
+  span { color: var(--sf-text-muted); font-size: .75rem; }
+}
+.create-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 640px) {
+  .create-panel { padding: 16px; }
+  .create-grid { grid-template-columns: minmax(0, 1fr); }
+  .create-grid .create-reason { grid-column: auto; }
+}

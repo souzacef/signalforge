@@ -1,4 +1,5 @@
 import { DatePipe } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
 import { ChangeDetectionStrategy, Component, DestroyRef, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
@@ -11,13 +12,15 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatTableModule } from '@angular/material/table';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { catchError, EMPTY, startWith, Subject, switchMap, tap } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
 import { RemediationApiService } from './remediation-api.service';
+import { isServiceTarget, knownRemediationDetail, TARGET_CONTROL_PATTERN } from './remediation-mutation';
 import {
   DEFAULT_REMEDIATION_LIST_QUERY, isoToLocalDateTime, isRemediationUuid,
   localDateTimeToIso, parseRemediationListQuery, REMEDIATION_PAGE_SIZES,
   RemediationListQuery, RemediationPageSize, remediationQueryToParams,
 } from './remediation-list-query';
-import { RemediationActionKind, RemediationProposalListResponse, RemediationProposalStatus } from './remediation.models';
+import { RemediationActionKind, RemediationProposalCreateRequest, RemediationProposalListResponse, RemediationProposalStatus } from './remediation.models';
 
 @Component({
   selector: 'app-remediation',
@@ -29,6 +32,7 @@ import { RemediationActionKind, RemediationProposalListResponse, RemediationProp
 })
 export class RemediationComponent {
   private readonly api = inject(RemediationApiService);
+  private readonly auth = inject(AuthService);
   readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
@@ -52,6 +56,17 @@ export class RemediationComponent {
   readonly proposedByUserIdError = signal<string | null>(null);
   readonly targetError = signal<string | null>(null);
   readonly dateRangeError = signal<string | null>(null);
+  readonly createOpen = signal(false);
+  readonly createState = signal<'idle' | 'creating'>('idle');
+  readonly createIncidentError = signal<string | null>(null);
+  readonly createTargetError = signal<string | null>(null);
+  readonly createReasonError = signal<string | null>(null);
+  readonly createFeedback = signal<string | null>(null);
+  readonly createForm = new FormGroup({
+    incidentId: new FormControl('', { nonNullable: true }),
+    target: new FormControl('', { nonNullable: true }),
+    reason: new FormControl('', { nonNullable: true }),
+  });
 
   readonly filterForm = new FormGroup({
     status: new FormControl<RemediationProposalStatus | null>(null),
@@ -95,6 +110,75 @@ export class RemediationComponent {
       }),
       takeUntilDestroyed(this.destroyRef),
     ).subscribe();
+  }
+
+  canCreate(): boolean {
+    const role = this.auth.currentUser()?.role;
+    return role === 'operator' || role === 'admin';
+  }
+
+  openCreate(): void {
+    if (this.canCreate() && this.createState() === 'idle') this.createOpen.set(true);
+  }
+
+  cancelCreate(): void {
+    if (this.createState() !== 'idle') return;
+    this.createOpen.set(false);
+    this.createForm.reset({ incidentId: '', target: '', reason: '' });
+    this.clearCreateFeedback();
+  }
+
+  submitCreate(): void {
+    if (!this.canCreate() || !this.createOpen() || this.createState() !== 'idle') return;
+    this.clearCreateFeedback();
+    const raw = this.createForm.getRawValue();
+    const incidentId = raw.incidentId.trim();
+    const target = raw.target.trim();
+    const reason = raw.reason.trim();
+    if (!isRemediationUuid(incidentId)) this.createIncidentError.set('Enter a valid Incident ID (UUID).');
+    if (!target) this.createTargetError.set('Enter a service target.');
+    else if (target.length > 100) this.createTargetError.set('Target must be 100 characters or fewer.');
+    else if (TARGET_CONTROL_PATTERN.test(raw.target) || !isServiceTarget(target)) this.createTargetError.set('Use lowercase letters, digits, dots, underscores or hyphens; start and end with a letter or digit.');
+    if (!reason) this.createReasonError.set('Enter a reason.');
+    else if (reason.length > 1000) this.createReasonError.set('Reason must be 1000 characters or fewer.');
+    if (this.createIncidentError() || this.createTargetError() || this.createReasonError()) return;
+    const request: RemediationProposalCreateRequest = {
+      incident_id: incidentId, action_kind: 'restart_service', target, reason,
+    };
+    this.createState.set('creating');
+    this.api.createProposal(request).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (proposal) => {
+        this.createState.set('idle');
+        this.createOpen.set(false);
+        void this.router.navigate(['/remediation', proposal.id], {
+          queryParams: this.route.snapshot.queryParams,
+        });
+      },
+      error: (error: unknown) => {
+        this.createState.set('idle');
+        this.createFeedback.set(this.createErrorMessage(error));
+      },
+    });
+  }
+
+  private createErrorMessage(error: unknown): string {
+    if (!(error instanceof HttpErrorResponse)) return 'Remediation proposal could not be created. Try again.';
+    if (error.status === 404) return 'Incident not found.';
+    if (error.status === 403) return 'You do not have permission to create remediation proposals.';
+    if (error.status === 409) {
+      const detail = knownRemediationDetail(error);
+      if (detail === 'Incident is not eligible for remediation')
+        return 'This incident is not eligible for remediation.';
+      if (detail === 'A matching pending remediation proposal already exists')
+        return 'A matching pending remediation proposal already exists.';
+      return 'Proposal could not be created because the current server state does not allow it.';
+    }
+    return 'Remediation proposal could not be created. Try again.';
+  }
+
+  private clearCreateFeedback(): void {
+    this.createIncidentError.set(null); this.createTargetError.set(null);
+    this.createReasonError.set(null); this.createFeedback.set(null);
   }
 
   applyFilters(): void {

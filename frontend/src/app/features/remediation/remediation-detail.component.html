@@ -2,9 +2,18 @@
   <nav class="detail-nav" aria-label="Remediation navigation">
     <a mat-button [routerLink]="['/remediation']" [queryParams]="backQueryParams()">← Back to remediation</a>
     @if (proposalState() !== 'invalid') {
-      <button mat-stroked-button type="button" (click)="refresh()">Refresh</button>
+      <button mat-stroked-button type="button" (click)="refresh()" [disabled]="mutationState() !== 'idle'">Refresh</button>
     }
   </nav>
+
+  @if (decisionFeedback(); as feedback) {
+    <p class="decision-feedback" role="status" aria-live="polite">{{ feedback }}</p>
+  }
+  @if (mutationState() === 'approving') {
+    <p class="decision-progress" role="status" aria-live="polite">Approving proposal…</p>
+  } @else if (mutationState() === 'rejecting') {
+    <p class="decision-progress" role="status" aria-live="polite">Rejecting proposal…</p>
+  }
 
   @if (proposalState() === 'invalid') {
     <div class="message-state" role="alert">
@@ -58,6 +67,54 @@
           <div><dt>Status</dt><dd>Pending approval</dd></div>
           <div><dt>Proposed by user ID</dt><dd>{{ item.proposed_by_user_id }}</dd></div>
         </dl>
+        @if (isOwnPendingAdmin(item)) {
+          <p class="review-note">A proposer cannot approve their own remediation proposal. Another admin must review it.</p>
+        } @else if (isOtherPendingOperator(item)) {
+          <p class="review-note">Only an administrator can decide another user's pending proposal.</p>
+        }
+        @if (decisionMode() === 'idle') {
+          @if (canApprove(item) || canReject(item)) {
+            <div class="decision-actions">
+              @if (canApprove(item)) {
+                <button mat-flat-button type="button" (click)="openApproval()"
+                  [disabled]="mutationState() !== 'idle'">Approve</button>
+              }
+              @if (canReject(item)) {
+                <button mat-stroked-button type="button" (click)="openRejection()"
+                  [disabled]="mutationState() !== 'idle'">Reject</button>
+              }
+            </div>
+          }
+        } @else if (decisionMode() === 'confirm-approval') {
+          <div class="decision-panel" role="group" aria-labelledby="approval-confirm-heading">
+            <h3 id="approval-confirm-heading">Approve this remediation proposal?</h3>
+            <p>Approval allows an authorized execution request. It does not execute the remediation.</p>
+            <div class="decision-actions">
+              <button mat-flat-button type="button" (click)="confirmApproval()"
+                [disabled]="mutationState() !== 'idle'">Confirm approval</button>
+              <button mat-button type="button" (click)="cancelDecision()"
+                [disabled]="mutationState() !== 'idle'">Cancel</button>
+            </div>
+          </div>
+        } @else {
+          <form class="decision-panel" [formGroup]="rejectionForm" (ngSubmit)="confirmRejection()"
+            aria-labelledby="rejection-heading" novalidate>
+            <h3 id="rejection-heading">Reject this remediation proposal?</h3>
+            <mat-form-field appearance="outline" subscriptSizing="dynamic">
+              <mat-label>Rejection reason</mat-label>
+              <textarea matInput formControlName="reason" rows="4" maxlength="1001"
+                [readonly]="mutationState() !== 'idle'"
+                [attr.aria-describedby]="rejectionError() ? 'rejection-error' : null"
+                [attr.aria-invalid]="rejectionError() ? 'true' : null"></textarea>
+            </mat-form-field>
+            @if (rejectionError(); as error) { <p id="rejection-error" class="validation-error" role="alert">{{ error }}</p> }
+            <div class="decision-actions">
+              <button mat-flat-button type="submit" [disabled]="mutationState() !== 'idle'">Confirm rejection</button>
+              <button mat-button type="button" (click)="cancelDecision()"
+                [disabled]="mutationState() !== 'idle'">Cancel</button>
+            </div>
+          </form>
+        }
       } @else if (item.status === 'approved') {
         <p class="review-note">Approval permits an authorized execution request; it does not itself execute the action.</p>
         <dl class="metadata-grid">
@@ -91,7 +148,7 @@
       } @else if (executionState() === 'error') {
         <div role="alert">
           <p>Execution status could not be loaded.</p>
-          <button mat-stroked-button type="button" (click)="refresh()">Refresh</button>
+          <button mat-stroked-button type="button" (click)="refresh()" [disabled]="mutationState() !== 'idle'">Refresh</button>
         </div>
       } @else if (execution(); as record) {
         <p class="execution-status">Status: {{ executionLabels[record.status] }}</p>

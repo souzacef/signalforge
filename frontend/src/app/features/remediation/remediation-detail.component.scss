@@ -33,3 +33,22 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--sf-accent); out
 @media (max-width: 640px) { .detail-header, .detail-card, .message-state { padding: 16px; }
   .metadata-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+.decision-feedback, .decision-progress { margin: 0; padding: 12px 16px; min-width: 0;
+  border: 1px solid var(--sf-border-strong); border-radius: var(--sf-radius-md);
+  background: var(--sf-surface); overflow-wrap: anywhere; }
+.decision-feedback { color: var(--sf-accent); }
+.decision-progress { color: var(--sf-text-muted); }
+.decision-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.decision-panel { display: grid; gap: 12px; margin-top: 18px; padding: 16px; min-width: 0;
+  border: 1px solid var(--sf-border-strong); border-radius: var(--sf-radius-md);
+  background: var(--sf-surface-raised);
+  h3 { margin: 0; font-size: .95rem; }
+  p { margin: 0; overflow-wrap: anywhere; }
+  mat-form-field { width: 100%; min-width: 0; }
+  textarea { min-height: 100px; resize: vertical; }
+  .validation-error { color: #ffc5c8; }
+}
+@media (max-width: 640px) { .decision-panel { padding: 12px; }
+  .decision-actions button { max-width: 100%; }
+}
