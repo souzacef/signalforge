@@ -21,3 +21,8 @@ scrape_configs:
     static_configs:
       - targets:
           - enrichment-worker:9103
+
+  - job_name: signalforge-remediation-worker
+    static_configs:
+      - targets:
+          - remediation-worker:9104
