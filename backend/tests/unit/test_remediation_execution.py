@@ -389,3 +389,26 @@ def test_execution_module_imports_no_host_control_libraries() -> None:
             imported_roots.add(node.module.split(".", maxsplit=1)[0])
 
     assert imported_roots.isdisjoint({"subprocess", "os", "docker", "kubernetes"})
+
+
+@pytest.mark.parametrize(
+    ("timeout", "lease"),
+    [(5.0, 5.0), (5.0, 4.9), (float("inf"), 45.0), (5.0, float("inf"))],
+)
+def test_execution_settings_require_finite_lease_longer_than_timeout(
+    timeout: float,
+    lease: float,
+) -> None:
+    with pytest.raises(ValidationError):
+        RemediationExecutionSettings.model_validate(
+            {
+                "request_timeout_seconds": timeout,
+                "attempt_lease_seconds": lease,
+            }
+        )
+
+
+def test_execution_attempt_lease_defaults_to_45_seconds() -> None:
+    configured = settings()
+    assert configured.attempt_lease_seconds == 45.0
+    assert configured.attempt_lease_seconds > configured.request_timeout_seconds

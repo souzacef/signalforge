@@ -109,4 +109,5 @@ class RemediationExecutionResponse(BaseModel):
     status: RemediationExecutionStatus
     requested_by_user_id: UUID
     requested_at: datetime
+    completed_at: datetime | None
     updated_at: datetime

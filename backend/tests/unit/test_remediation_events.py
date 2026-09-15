@@ -27,8 +27,14 @@ def event() -> RemediationExecutionRequested:
     )
 
 
-def test_execution_status_has_only_requested_state() -> None:
-    assert list(RemediationExecutionStatus) == [RemediationExecutionStatus.REQUESTED]
+def test_execution_status_has_phase_5d2a_states() -> None:
+    assert list(RemediationExecutionStatus) == [
+        RemediationExecutionStatus.REQUESTED,
+        RemediationExecutionStatus.IN_PROGRESS,
+        RemediationExecutionStatus.SUCCEEDED,
+        RemediationExecutionStatus.FAILED,
+        RemediationExecutionStatus.OUTCOME_UNKNOWN,
+    ]
 
 
 def test_v1_execution_request_is_frozen_and_roundtrips() -> None:

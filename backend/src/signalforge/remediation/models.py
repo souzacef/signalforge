@@ -9,6 +9,8 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
+    SmallInteger,
     String,
     UniqueConstraint,
     func,
@@ -32,6 +34,28 @@ class RemediationProposalStatus(StrEnum):
 
 class RemediationExecutionStatus(StrEnum):
     REQUESTED = "requested"
+    IN_PROGRESS = "in_progress"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+
+
+class RemediationExecutionAttemptStatus(StrEnum):
+    IN_PROGRESS = "in_progress"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+
+
+class RemediationFailureKind(StrEnum):
+    TARGET_NOT_ALLOWED = "target_not_allowed"
+    UNSUPPORTED_ACTION = "unsupported_action"
+    HTTP_REJECTED = "http_rejected"
+    HTTP_SERVER_ERROR = "http_server_error"
+    TIMEOUT = "timeout"
+    TRANSPORT = "transport"
+    INTERRUPTED = "interrupted"
+    UNEXPECTED = "unexpected"
 
 
 def _enum_values(enum_class: type[PythonEnum]) -> list[str]:
@@ -182,6 +206,14 @@ class RemediationExecution(Base):
             "proposal_id",
             name="uq_remediation_executions_proposal_id",
         ),
+        CheckConstraint(
+            "status NOT IN ('requested', 'in_progress', 'succeeded', 'failed', "
+            "'outcome_unknown') OR "
+            "(status IN ('requested', 'in_progress') AND completed_at IS NULL) "
+            "OR (status IN ('succeeded', 'failed', 'outcome_unknown') "
+            "AND completed_at IS NOT NULL)",
+            name="ck_remediation_executions_status_completion",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -233,6 +265,114 @@ class RemediationExecution(Base):
     requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class RemediationExecutionAttempt(Base):
+    __tablename__ = "remediation_execution_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "attempt_number > 0",
+            name="ck_remediation_execution_attempts_number_positive",
+        ),
+        CheckConstraint(
+            "(status = 'in_progress' AND completed_at IS NULL "
+            "AND failure_kind IS NULL AND http_status_code IS NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(status = 'succeeded' AND completed_at IS NOT NULL "
+            "AND failure_kind IS NULL AND http_status_code IS NULL "
+            "AND lease_expires_at IS NULL) OR "
+            "(status IN ('failed', 'outcome_unknown') AND completed_at IS NOT NULL "
+            "AND failure_kind IS NOT NULL AND lease_expires_at IS NULL)",
+            name="ck_remediation_execution_attempts_status_attribution",
+        ),
+        CheckConstraint(
+            "(status = 'in_progress' AND failure_kind IS NULL) OR "
+            "(status = 'succeeded' AND failure_kind IS NULL) OR "
+            "(status = 'failed' AND failure_kind IN "
+            "('target_not_allowed', 'unsupported_action', 'http_rejected')) OR "
+            "(status = 'outcome_unknown' AND failure_kind IN "
+            "('http_server_error', 'timeout', 'transport', 'interrupted', "
+            "'unexpected'))",
+            name="ck_remediation_execution_attempts_failure_attribution",
+        ),
+        CheckConstraint(
+            "(failure_kind = 'http_rejected' "
+            "AND http_status_code IS NOT NULL "
+            "AND http_status_code BETWEEN 300 AND 499) OR "
+            "(failure_kind = 'http_server_error' "
+            "AND http_status_code IS NOT NULL "
+            "AND http_status_code BETWEEN 500 AND 999) OR "
+            "(failure_kind IS DISTINCT FROM 'http_rejected' "
+            "AND failure_kind IS DISTINCT FROM 'http_server_error' "
+            "AND http_status_code IS NULL)",
+            name="ck_remediation_execution_attempts_http_attribution",
+        ),
+        UniqueConstraint(
+            "execution_id",
+            "attempt_number",
+            name="uq_remediation_execution_attempts_execution_number",
+        ),
+        UniqueConstraint(
+            "request_event_id",
+            name="uq_remediation_execution_attempts_request_event_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    execution_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "remediation_executions.id",
+            name="fk_remediation_attempts_execution_id_executions",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    request_event_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[RemediationExecutionAttemptStatus] = mapped_column(
+        Enum(
+            RemediationExecutionAttemptStatus,
+            name="remediation_execution_attempt_status",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failure_kind: Mapped[RemediationFailureKind | None] = mapped_column(
+        Enum(
+            RemediationFailureKind,
+            name="remediation_failure_kind",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=_enum_values,
+        ),
+        nullable=True,
+    )
+    http_status_code: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

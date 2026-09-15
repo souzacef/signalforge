@@ -14,6 +14,7 @@ from signalforge.remediation.errors import (
     IncidentNotFoundForRemediationError,
     InvalidRemediationTransitionError,
     RemediationExecutionAlreadyRequestedError,
+    RemediationExecutionNotFoundError,
     RemediationProposalNotApprovedForExecutionError,
     RemediationProposalNotFoundError,
     RemediationSelfApprovalError,
@@ -181,6 +182,25 @@ async def approve_remediation_proposal(
         },
     )
     return proposal
+
+
+@router.get(
+    "/{proposal_id}/execution",
+    response_model=RemediationExecutionResponse,
+)
+async def get_remediation_execution(
+    proposal_id: UUID,
+    session: DatabaseSession,
+    _actor: ProposalReader,
+) -> RemediationExecutionResponse:
+    try:
+        execution = await service.get_remediation_execution(session, proposal_id)
+        return RemediationExecutionResponse.model_validate(execution)
+    except RemediationExecutionNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Remediation execution not found",
+        ) from error
 
 
 @router.post(
