@@ -9,6 +9,12 @@
   @if (decisionFeedback(); as feedback) {
     <p class="decision-feedback" role="status" aria-live="polite">{{ feedback }}</p>
   }
+  @if (executionFeedback(); as feedback) {
+    <p class="execution-feedback" role="status" aria-live="polite">{{ feedback }}</p>
+  }
+  @if (mutationState() === 'requesting-execution') {
+    <p class="decision-progress" role="status" aria-live="polite">Requesting execution…</p>
+  }
   @if (mutationState() === 'approving') {
     <p class="decision-progress" role="status" aria-live="polite">Approving proposal…</p>
   } @else if (mutationState() === 'rejecting') {
@@ -145,6 +151,26 @@
         </div>
       } @else if (executionState() === 'missing') {
         <p role="status">No execution has been requested for this approved proposal.</p>
+        @if (executionRequestMode() === 'confirm') {
+          <div class="decision-panel execution-confirmation" role="group" aria-labelledby="execution-confirm-heading">
+            <h3 id="execution-confirm-heading">Request remediation execution?</h3>
+            <p>This creates a durable execution request for the approved Restart service action. Processing is asynchronous and may affect the target service.</p>
+            <dl class="metadata-grid">
+              <div><dt>Action</dt><dd>{{ actionLabels[item.action_kind] }}</dd></div>
+              <div><dt>Target</dt><dd>{{ item.target }}</dd></div>
+            </dl>
+            <div class="decision-actions">
+              <button mat-flat-button type="button" (click)="confirmExecutionRequest()" [disabled]="mutationState() !== 'idle'">Confirm execution request</button>
+              <button mat-button type="button" (click)="cancelExecutionRequest()" [disabled]="mutationState() !== 'idle'">Cancel</button>
+            </div>
+          </div>
+        } @else if (canRequestExecution(item)) {
+          <button mat-flat-button type="button" (click)="openExecutionRequest()">Request execution</button>
+        }
+      } @else if (executionState() === 'reconciling') {
+        <p role="status" aria-live="polite">Checking the current execution record…</p>
+      } @else if (executionState() === 'unconfirmed') {
+        <p role="alert">Execution request state is unconfirmed. Use Refresh to load the latest durable state.</p>
       } @else if (executionState() === 'error') {
         <div role="alert">
           <p>Execution status could not be loaded.</p>
@@ -152,7 +178,13 @@
         </div>
       } @else if (execution(); as record) {
         <p class="execution-status">Status: {{ executionLabels[record.status] }}</p>
-        @if (record.status === 'outcome_unknown') {
+        @if (record.status === 'requested') {
+          <p>The execution request has been durably recorded and is awaiting asynchronous processing. Use Refresh to check the latest durable status.</p>
+        } @else if (record.status === 'in_progress') {
+          <p>SignalForge has recorded this execution as in progress. Use Refresh to check the latest durable status.</p>
+        } @else if (record.status === 'succeeded') {
+          <p>The durable execution is recorded as succeeded.</p>
+        } @else if (record.status === 'outcome_unknown') {
           <p>The final actuator outcome could not be determined from the durable execution record.</p>
         } @else if (record.status === 'failed') {
           <p>The durable execution is recorded as failed.</p>

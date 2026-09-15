@@ -97,8 +97,13 @@ execution status. Operators and admins may create restart-service proposals.
 An admin may approve another user's pending proposal; self-approval is prohibited.
 An operator may reject only their own pending proposal, while an admin may reject
 any pending proposal. Rejection requires a reason. Approval does not execute
-remediation: execution remains a separate controlled step. An unknown execution
-outcome remains distinct from success and failure.
+remediation: an admin must separately confirm an execution request for an
+approved proposal. Requests are processed asynchronously, and only one durable
+execution record is allowed per proposal. The detail view uses manual Refresh to
+monitor `requested`, `in_progress`, `succeeded`, `failed`, and `outcome_unknown`.
+An unknown outcome remains distinct from success and failure, and the frontend
+offers no automatic retry or rerun. If a request response is ambiguous, the
+frontend reads durable execution state before allowing another deliberate request.
 
 Use Node.js 24.15.0 or a later 24.x release and npm 11.13.0 or a later 11.x
 release. Start the local backend at <http://127.0.0.1:8000> first, using the

@@ -40,4 +40,8 @@ export class RemediationApiService {
   getExecution(proposalId: string): Observable<RemediationExecution> {
     return this.http.get<RemediationExecution>(`/api/v1/remediation-proposals/${proposalId}/execution`);
   }
+
+  requestExecution(proposalId: string): Observable<RemediationExecution> {
+    return this.http.post<RemediationExecution>(`/api/v1/remediation-proposals/${proposalId}/execute`, null);
+  }
 }

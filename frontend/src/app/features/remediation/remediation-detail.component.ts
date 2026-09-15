@@ -19,9 +19,10 @@ import {
 } from './remediation.models';
 
 type ProposalState = 'loading' | 'ready' | 'invalid' | 'not-found' | 'error';
-type ExecutionState = 'not-applicable' | 'loading' | 'ready' | 'missing' | 'error';
+type ExecutionState = 'not-applicable' | 'loading' | 'ready' | 'missing' | 'error' | 'reconciling' | 'unconfirmed';
+type ExecutionRequestMode = 'idle' | 'confirm';
 type DecisionMode = 'idle' | 'confirm-approval' | 'reject';
-type MutationState = 'idle' | 'approving' | 'rejecting';
+type MutationState = 'idle' | 'approving' | 'rejecting' | 'requesting-execution';
 
 @Component({
   selector: 'app-remediation-detail',
@@ -47,6 +48,8 @@ export class RemediationDetailComponent {
   readonly decisionMode = signal<DecisionMode>('idle');
   readonly mutationState = signal<MutationState>('idle');
   readonly decisionFeedback = signal<string | null>(null);
+  readonly executionRequestMode = signal<ExecutionRequestMode>('idle');
+  readonly executionFeedback = signal<string | null>(null);
   readonly rejectionError = signal<string | null>(null);
   readonly rejectionForm = new FormGroup({
     reason: new FormControl('', { nonNullable: true }),
@@ -84,6 +87,105 @@ export class RemediationDetailComponent {
     return item.status === 'pending_approval' && !!user &&
       (user.role === 'admin' ||
         (user.role === 'operator' && user.id === item.proposed_by_user_id));
+  }
+
+  canRequestExecution(item: RemediationProposal): boolean {
+    return item.status === 'approved' && this.auth.currentUser()?.role === 'admin' &&
+      this.executionState() === 'missing' && this.mutationState() === 'idle';
+  }
+
+  openExecutionRequest(): void {
+    const item = this.proposal();
+    if (!item || !this.canRequestExecution(item) || this.decisionMode() !== 'idle') return;
+    this.executionRequestMode.set('confirm');
+    this.executionFeedback.set(null);
+  }
+
+  cancelExecutionRequest(): void {
+    if (this.mutationState() !== 'idle') return;
+    this.executionRequestMode.set('idle');
+  }
+
+  confirmExecutionRequest(): void {
+    const item = this.proposal();
+    if (!item || !this.canRequestExecution(item) || this.executionRequestMode() !== 'confirm' ||
+        this.decisionMode() !== 'idle') return;
+    const generation = this.generation;
+    this.mutationState.set('requesting-execution');
+    this.executionFeedback.set(null);
+    this.api.requestExecution(item.id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (record) => {
+        if (!this.isCurrent(item.id, generation)) return;
+        this.execution.set(record);
+        this.executionState.set('ready');
+        this.executionRequestMode.set('idle');
+        this.mutationState.set('idle');
+        this.executionFeedback.set('Execution request accepted. Execution is processed asynchronously. Use Refresh to check the latest durable status.');
+      },
+      error: (error: unknown) => {
+        if (!this.isCurrent(item.id, generation)) return;
+        this.executionRequestMode.set('idle');
+        if (error instanceof HttpErrorResponse) {
+          if (error.status === 404) {
+            this.mutationState.set('idle');
+            this.proposal.set(null);
+            this.execution.set(null);
+            this.executionState.set('not-applicable');
+            this.proposalState.set('not-found');
+            return;
+          }
+          if (error.status === 403) {
+            this.mutationState.set('idle');
+            this.executionFeedback.set('You do not have permission to request remediation execution.');
+            return;
+          }
+          if (error.status === 409) {
+            const detail = knownRemediationDetail(error);
+            if (detail === 'Execution has already been requested for this remediation proposal') {
+              this.reconcileExecution(item.id, generation, 'duplicate');
+              return;
+            }
+            if (detail === 'Remediation proposal is not approved for execution') {
+              this.mutationState.set('idle');
+              this.executionState.set('unconfirmed');
+              this.executionFeedback.set('Proposal state no longer allows an execution request. Loading the latest state.');
+              this.refreshRequest.next();
+              return;
+            }
+          }
+        }
+        this.reconcileExecution(item.id, generation, 'ambiguous');
+      },
+    });
+  }
+
+  private reconcileExecution(id: string, generation: number, reason: 'duplicate' | 'ambiguous'): void {
+    this.executionState.set('reconciling');
+    this.executionFeedback.set(reason === 'duplicate'
+      ? 'Execution was already requested. Loading the current execution state.'
+      : 'The execution request could not be confirmed. Checking durable state.');
+    this.api.getExecution(id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (record) => {
+        if (!this.isCurrent(id, generation)) return;
+        this.execution.set(record);
+        this.executionState.set('ready');
+        this.mutationState.set('idle');
+        if (reason === 'ambiguous') this.executionFeedback.set('An execution record exists for this proposal.');
+      },
+      error: (error: unknown) => {
+        if (!this.isCurrent(id, generation)) return;
+        this.mutationState.set('idle');
+        if (error instanceof HttpErrorResponse && error.status === 404 && reason === 'ambiguous') {
+          this.executionState.set('missing');
+          this.executionFeedback.set('No durable execution record was found. You may request execution again.');
+        } else {
+          this.executionState.set('unconfirmed');
+          this.executionFeedback.set(reason === 'duplicate' && error instanceof HttpErrorResponse && error.status === 404
+            ? 'Execution was reported as already requested, but the current execution record could not be loaded. Refresh before taking further action.'
+            : 'Execution request state could not be confirmed. Refresh before trying again.');
+        }
+      },
+    });
   }
 
   isOwnPendingAdmin(item: RemediationProposal): boolean {
@@ -182,6 +284,7 @@ export class RemediationDetailComponent {
   refresh(): void {
     if (this.mutationState() !== 'idle') return;
     this.decisionFeedback.set(null);
+    this.executionFeedback.set(null);
     this.refreshRequest.next();
   }
   backQueryParams() { return parseRemediationListQuery(this.route.snapshot.queryParamMap).canonicalParams; }
@@ -243,9 +346,13 @@ export class RemediationDetailComponent {
 
   private load(id: string | null) {
     this.generation++;
-    if (id !== this.routeIdentity) this.decisionFeedback.set(null);
+    if (id !== this.routeIdentity) {
+      this.decisionFeedback.set(null);
+      this.executionFeedback.set(null);
+    }
     this.routeIdentity = id;
     this.decisionMode.set('idle');
+    this.executionRequestMode.set('idle');
     this.mutationState.set('idle');
     this.rejectionError.set(null);
     this.rejectionForm.reset({ reason: '' });
