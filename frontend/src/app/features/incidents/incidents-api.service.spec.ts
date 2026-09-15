@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 import { DEFAULT_INCIDENT_LIST_QUERY, IncidentListQuery } from './incident-list-query';
-import { IncidentListResponse } from './incident.models';
+import { Incident, IncidentListResponse } from './incident.models';
 import { IncidentsApiService } from './incidents-api.service';
 
 describe('IncidentsApiService', () => {
@@ -66,7 +66,9 @@ describe('IncidentsApiService detail reads', () => {
   const id = '57ed68ac-bc67-493e-a621-f63da52d6b12';
 
   beforeEach(() => {
-    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
     service = TestBed.inject(IncidentsApiService);
     http = TestBed.inject(HttpTestingController);
   });
@@ -80,6 +82,36 @@ describe('IncidentsApiService detail reads', () => {
     request.flush({ id, source: 'prometheus', title: 'Incident' });
     await expect(result).resolves.toMatchObject({ id, title: 'Incident' });
   });
+
+  it.each([
+    ['acknowledgeIncident', 'acknowledge'],
+    ['resolveIncident', 'resolve'],
+  ] as const)(
+    'posts %s with no domain payload and returns the typed Incident',
+    async (method, path) => {
+      const response = {
+        id,
+        source: 'prometheus',
+        title: 'Incident',
+        description: null,
+        severity: 'high',
+        status: path === 'acknowledge' ? 'acknowledged' : 'resolved',
+        acknowledged_at: '2026-09-15T18:00:00Z',
+        acknowledged_by_user_id: id,
+        resolved_at: path === 'resolve' ? '2026-09-15T18:10:00Z' : null,
+        resolved_by_user_id: path === 'resolve' ? id : null,
+        occurred_at: '2026-09-15T17:45:00Z',
+        created_at: '2026-09-15T17:46:00Z',
+        updated_at: '2026-09-15T18:10:00Z',
+      } as Incident;
+      const result = firstValueFrom(service[method](id));
+      const request = http.expectOne(`/api/v1/incidents/${id}/${path}`);
+      expect(request.request.method).toBe('POST');
+      expect(request.request.body).toBeNull();
+      request.flush(response);
+      await expect(result).resolves.toEqual(response);
+    },
+  );
 
   it('gets the typed deterministic triage by ID', async () => {
     const result = firstValueFrom(service.getIncidentTriage(id));

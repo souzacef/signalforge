@@ -4,9 +4,19 @@
       ← Back to incidents
     </a>
     @if (incidentState() !== 'invalid' && incidentState() !== 'not-found') {
-      <button mat-stroked-button type="button" (click)="refresh()">Refresh</button>
+      <button mat-stroked-button type="button" (click)="refresh()" [disabled]="mutationState() !== 'idle'">Refresh</button>
     }
   </div>
+
+  @if (lifecycleFeedback(); as feedback) {
+    <p
+      class="page-message lifecycle-feedback {{ feedback.kind }}"
+      [attr.role]="feedback.kind === 'error' ? 'alert' : 'status'"
+      [attr.aria-live]="feedback.kind === 'error' ? 'assertive' : 'polite'"
+    >
+      {{ feedback.message }}
+    </p>
+  }
 
   @if (incidentState() === 'loading') {
     <div class="page-message" role="status" aria-live="polite" aria-busy="true">
@@ -69,6 +79,48 @@
         }
         <div class="incident-id"><dt>Incident ID</dt><dd class="identifier">{{ item.id }}</dd></div>
       </dl>
+    </section>
+
+    <section class="detail-panel lifecycle-panel" aria-labelledby="lifecycle-heading" [attr.aria-busy]="mutationState() !== 'idle'">
+      <div class="section-heading">
+        <h2 id="lifecycle-heading">Incident lifecycle</h2>
+        <p>Current state: <strong>{{ statusLabels[item.status] }}</strong></p>
+      </div>
+
+      @if (canManageLifecycle()) {
+        @if (item.status === 'open') {
+          <p class="lifecycle-copy">Acknowledge records that investigation has been acknowledged.</p>
+          <div class="lifecycle-actions">
+            <button mat-flat-button type="button" (click)="acknowledge()" [disabled]="mutationState() !== 'idle'">Acknowledge incident</button>
+          </div>
+        } @else if (item.status === 'acknowledged') {
+          @if (resolveConfirmationOpen()) {
+            <div class="resolve-confirmation" role="group" aria-labelledby="resolve-confirmation-heading">
+              <h3 id="resolve-confirmation-heading">Resolve this incident?</h3>
+              <p>This marks the incident resolved and completes its lifecycle.</p>
+              <div class="lifecycle-actions">
+                <button mat-flat-button type="button" (click)="confirmResolve()" [disabled]="mutationState() !== 'idle'">Confirm resolve</button>
+                <button mat-stroked-button type="button" (click)="cancelResolve()" [disabled]="mutationState() !== 'idle'">Cancel</button>
+              </div>
+            </div>
+          } @else {
+            <p class="lifecycle-copy">Resolve completes the incident lifecycle.</p>
+            <div class="lifecycle-actions">
+              <button mat-flat-button type="button" (click)="showResolveConfirmation()" [disabled]="mutationState() !== 'idle'">Resolve incident</button>
+            </div>
+          }
+        } @else {
+          <p class="lifecycle-copy lifecycle-complete">Lifecycle complete. This incident is resolved.</p>
+        }
+      } @else {
+        <p class="lifecycle-copy">Lifecycle changes require Operator or Admin access.</p>
+      }
+
+      @if (mutationState() === 'acknowledging') {
+        <p class="mutation-progress" role="status" aria-live="polite">Acknowledging…</p>
+      } @else if (mutationState() === 'resolving') {
+        <p class="mutation-progress" role="status" aria-live="polite">Resolving…</p>
+      }
     </section>
 
     <section class="detail-panel triage-panel" aria-labelledby="triage-heading" [attr.aria-busy]="triageState() === 'loading'">
