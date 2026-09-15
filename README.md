@@ -12,9 +12,12 @@ preventing modules from being separated later when real operational needs justif
 it.
 
 The Angular frontend now provides authentication, an operator-console shell,
-and a read-only Incident list with server-side filters and pagination. Incident
-list filters and page position are preserved in the URL. Incident detail, triage,
-lifecycle actions, and remediation data views remain later Phase 6 work. RAG,
+and read-only Incident list and detail views. The detail view shows deterministic
+triage as the authoritative priority baseline and the latest persisted AI
+enrichment as advisory only. Incident list filters and page position are preserved
+in the URL and through list-to-detail navigation. No frontend Incident lifecycle
+mutations are available yet. Lifecycle actions and remediation data views
+remain later Phase 6 work. RAG,
 Kubernetes, Helm, Terraform, and AWS are planned directions.
 
 ## Prerequisites

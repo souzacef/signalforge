@@ -27,6 +27,14 @@ export const routes: Routes = [
         title: 'Incidents · SignalForge',
       },
       {
+        path: 'incidents/:incidentId',
+        loadComponent: () =>
+          import('./features/incidents/incident-detail.component').then(
+            (component) => component.IncidentDetailComponent,
+          ),
+        title: 'Incident detail · SignalForge',
+      },
+      {
         path: 'remediation',
         loadComponent: () =>
           import('./features/remediation/remediation.component').then(

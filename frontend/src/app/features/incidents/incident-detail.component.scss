@@ -1,0 +1,279 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.detail-page {
+  display: grid;
+  gap: 20px;
+  max-width: 1160px;
+  margin: 0 auto;
+  min-width: 0;
+}
+
+.page-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.incident-heading,
+.detail-panel,
+.page-message {
+  min-width: 0;
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-md);
+  background: var(--sf-surface);
+}
+
+.incident-heading {
+  padding: clamp(20px, 3vw, 32px);
+  border-top: 3px solid var(--sf-accent);
+
+  h1 {
+    margin: 4px 0 14px;
+    line-height: 1.2;
+    letter-spacing: -0.03em;
+    overflow-wrap: anywhere;
+  }
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--sf-accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.badges,
+.heading-meta,
+.triage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.badge,
+.priority,
+.category {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--sf-border-strong);
+  border-radius: 999px;
+  padding: 4px 11px;
+  background: var(--sf-surface-raised);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.severity-critical,
+.status-open,
+.priority-P1 {
+  border-color: rgb(255 107 114 / 48%);
+  color: #ffb8bc;
+  background: rgb(255 107 114 / 9%);
+}
+
+.severity-high {
+  border-color: rgb(255 137 92 / 45%);
+  color: #ffb18f;
+}
+
+.severity-medium,
+.status-acknowledged,
+.priority-P2 {
+  border-color: rgb(244 163 64 / 38%);
+  color: #f8c985;
+}
+
+.severity-low,
+.status-resolved,
+.priority-P4 {
+  border-color: rgb(83 211 237 / 34%);
+  color: #9ee8f6;
+}
+
+.priority-P3 {
+  color: #c6d6e7;
+}
+
+.heading-meta {
+  margin: 16px 0 0;
+  color: var(--sf-text-muted);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+
+  strong,
+  time {
+    margin-left: 4px;
+    color: var(--sf-text);
+    font-weight: 600;
+  }
+}
+
+.detail-panel {
+  padding: clamp(20px, 3vw, 28px);
+
+  h2 {
+    margin: 0;
+    font-size: 1.1rem;
+  }
+}
+
+.triage-panel {
+  border-left: 3px solid var(--sf-accent);
+}
+
+.advisory-panel {
+  border-left: 3px solid var(--sf-border-strong);
+}
+
+.section-heading {
+  p {
+    margin: 6px 0 0;
+    color: var(--sf-text-muted);
+    font-size: 0.84rem;
+  }
+}
+
+.description,
+.summary {
+  margin: 18px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.facts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin: 20px 0 0;
+
+  > div {
+    min-width: 0;
+  }
+
+  dt,
+  .meta-label {
+    color: var(--sf-text-muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  dd {
+    margin: 5px 0 0;
+    font-size: 0.86rem;
+    overflow-wrap: anywhere;
+  }
+}
+
+.identifier {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.incident-id {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--sf-border);
+  padding-top: 16px;
+  color: var(--sf-text-muted);
+}
+
+.triage-summary {
+  margin-top: 22px;
+  gap: 16px;
+}
+
+.priority {
+  border-radius: 7px;
+  padding: 8px 14px;
+  font-size: 1rem;
+}
+
+.review {
+  font-size: 0.88rem;
+}
+
+.section-state {
+  margin: 22px 0 0;
+  color: var(--sf-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.section-state.error {
+  color: #ffc5c8;
+}
+
+.page-message {
+  padding: 28px;
+
+  h1 {
+    margin: 16px 0 0;
+    font-size: 1.25rem;
+  }
+
+  p {
+    color: var(--sf-text-muted);
+  }
+}
+
+.advisory-content {
+  margin-top: 22px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+
+  h3 {
+    margin: 24px 0 8px;
+    font-size: 0.92rem;
+  }
+
+  ol {
+    margin: 0;
+    padding-left: 24px;
+  }
+
+  li {
+    padding: 3px 0;
+    white-space: pre-wrap;
+  }
+}
+
+.category {
+  color: var(--sf-accent);
+}
+
+.summary {
+  font-size: 0.98rem;
+  line-height: 1.6;
+}
+
+.meta-label {
+  margin-right: 7px;
+}
+
+.provenance {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--sf-border);
+  padding-top: 18px;
+  color: var(--sf-text-muted);
+}
+
+.snapshot-count {
+  margin: 18px 0 0;
+  color: var(--sf-text-muted);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 680px) {
+  .facts-grid,
+  .provenance {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
