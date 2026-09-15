@@ -23,9 +23,11 @@ Incident through server-authoritative lifecycle transitions; arbitrary status
 editing and reopening are not supported. The detail view keeps deterministic
 triage as the authoritative priority baseline and persisted AI enrichment as
 advisory only. Incident list filters and page position are preserved in the URL
-and through list-to-detail navigation. The read-only Remediation workspace now
-shows a proposal queue, detail, human review attribution, and durable execution
-status. RAG, Kubernetes, Helm, Terraform, and AWS are planned directions.
+and through list-to-detail navigation. The Remediation workspace provides a
+proposal queue and detail, proposal creation for operators and admins,
+human-in-the-loop approval or rejection, controlled admin execution requests,
+and durable execution status. RAG, Kubernetes, Helm, Terraform, and AWS are
+planned directions.
 
 ## Prerequisites
 
@@ -137,35 +139,67 @@ npm run build
 
 ## Container workflow
 
-The backend image is a reproducible application runtime without source bind
-mounts or development reload. Before using Compose, set a generated
-`SIGNALFORGE_JWT_SECRET` in `.env`; Compose rejects an unset or empty value.
-
-The commands below use Podman. Replace `podman compose` with `docker compose`
-for the equivalent Docker workflow:
+The backend and frontend images are reproducible runtimes without source bind
+mounts or development servers. The frontend is optional and does not change the
+default Compose stack. For a first-time containerized demo, run the following
+from the repository root. The user command prompts for the password twice and
+does not accept it on the command line.
 
 ```sh
-podman compose build backend
+cp .env.example .env
+openssl rand -hex 32
+# Copy the generated value into SIGNALFORGE_JWT_SECRET in .env.
+podman compose --profile demo build backend frontend
 podman compose up -d postgres
 podman compose run --rm backend alembic upgrade head
-podman compose up -d
+podman compose run --rm backend python -m signalforge.users.create_user \
+  --email admin@example.com \
+  --role admin
+podman compose --profile demo up -d
 podman compose ps
 ```
 
-Migrations are an explicit one-shot command and are never run by any service at
-startup. The same application image supplies the default API command, the
-Alembic CLI, and the standalone dispatcher, consumer, enrichment-worker, and
-remediation-worker commands.
+The commands use Podman. Replace `podman compose` with `docker compose` for the
+equivalent Docker workflow. On subsequent starts, use:
 
-The API is available at <http://127.0.0.1:8000> by default. Set
-`BACKEND_PORT` to change the published host port. Compose connects the backend
-to PostgreSQL through the `postgres` service hostname, while direct host
-development continues to use the URL from `.env`.
+```sh
+podman compose --profile demo up -d
+```
+
+Open the packaged console at <http://127.0.0.1:8080>, or at the loopback port
+set by `FRONTEND_PORT`. The browser uses that frontend origin; Nginx preserves
+relative `/api/...` paths and proxies them to the backend over the Compose
+network, so normal UI use needs no CORS workaround. FastAPI remains separately
+available at <http://127.0.0.1:8000> by default for Swagger, direct API
+debugging, and backend health endpoints. Set `BACKEND_PORT` to change its
+published host port. `GET /healthz` on the frontend origin checks Nginx liveness
+only; backend readiness remains `GET /health/ready` on the backend service.
+
+Migrations are an explicit one-shot command and are never run by frontend,
+backend, PostgreSQL, or worker startup. There is no public registration endpoint
+and Compose does not create a default user. The backend image supplies the API,
+Alembic CLI, user bootstrap CLI, dispatcher, consumer, enrichment worker, and
+remediation worker commands.
 
 The default local five-service core stack consists of PostgreSQL, the FastAPI
-backend, RabbitMQ, the standalone dispatcher, and the standalone consumer. An
-optional enrichment worker is available through the `ai` Compose profile, and
-an optional remediation worker is available through the `remediation` profile.
+backend, RabbitMQ, the standalone dispatcher, and the standalone consumer. The
+`demo` profile adds only the Angular frontend. Optional capabilities remain
+independent and profiles may be combined:
+
+- `--profile ai` adds advisory AI enrichment and requires Gemini configuration.
+- `--profile remediation` adds the remediation execution worker and requires a
+  non-empty allowlist whose logical targets map only to intentionally trusted,
+  test/demo-only restart endpoints.
+- `--profile observability` adds the local telemetry stack.
+
+For example, add AI to the demo with
+`podman compose --profile demo --profile ai up -d`; the same pattern combines
+the other profiles. Viewing and using the operator console does not require
+these optional profiles.
+
+The remediation worker remains opt-in and an approved proposal is executed only
+after a separate admin request.
+
 RabbitMQ accepts AMQP connections on
 <amqp://127.0.0.1:5672> and exposes its management UI at
 <http://127.0.0.1:15672> by default. `RABBITMQ_PORT` and
