@@ -139,6 +139,7 @@ async def test_approved_proposal_persists_safe_execution_and_outbox_snapshot(
     assert execution.status is RemediationExecutionStatus.REQUESTED
     assert execution.requested_by_user_id == requester.id
     assert execution.requested_at.tzinfo is not None
+    assert execution.completed_at is None
     assert execution.updated_at.tzinfo is not None
     assert set(execution.__table__.columns.keys()) == {
         "id",
@@ -148,6 +149,7 @@ async def test_approved_proposal_persists_safe_execution_and_outbox_snapshot(
         "status",
         "requested_by_user_id",
         "requested_at",
+        "completed_at",
         "updated_at",
     }
     assert outbox is not None

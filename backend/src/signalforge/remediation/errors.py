@@ -6,6 +6,10 @@ class RemediationProposalNotApprovedForExecutionError(Exception):
     """Raised when execution is requested for a non-approved proposal."""
 
 
+class RemediationExecutionNotFoundError(Exception):
+    """Raised when no execution exists for a remediation proposal."""
+
+
 class RemediationExecutionAlreadyRequestedError(Exception):
     """Raised when a proposal already has its one logical execution request."""
 

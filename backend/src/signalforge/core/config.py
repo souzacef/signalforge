@@ -94,7 +94,18 @@ class RemediationExecutionSettings(BaseSettings):
     )
 
     restart_endpoints: dict[ServiceTarget, HttpUrl] = Field(default_factory=dict)
-    request_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 5.0
+    request_timeout_seconds: Annotated[
+        float, Field(gt=0, le=30, allow_inf_nan=False)
+    ] = 5.0
+    attempt_lease_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 45.0
+
+    @model_validator(mode="after")
+    def require_lease_longer_than_http_timeout(self) -> Self:
+        if self.attempt_lease_seconds <= self.request_timeout_seconds:
+            raise ValueError(
+                "attempt_lease_seconds must be greater than request_timeout_seconds"
+            )
+        return self
 
     @field_validator("restart_endpoints")
     @classmethod

@@ -12,10 +12,12 @@ from signalforge.remediation.errors import (
     IncidentNotEligibleForRemediationError,
     IncidentNotFoundForRemediationError,
     InvalidRemediationTransitionError,
+    RemediationExecutionNotFoundError,
     RemediationProposalNotFoundError,
     RemediationSelfApprovalError,
 )
 from signalforge.remediation.models import (
+    RemediationExecution,
     RemediationProposal,
     RemediationProposalStatus,
 )
@@ -189,3 +191,17 @@ async def reject_remediation_proposal(
     await session.commit()
     await session.refresh(proposal)
     return proposal
+
+
+async def get_remediation_execution(
+    session: AsyncSession,
+    proposal_id: UUID,
+) -> RemediationExecution:
+    execution = await session.scalar(
+        select(RemediationExecution).where(
+            RemediationExecution.proposal_id == proposal_id
+        )
+    )
+    if execution is None:
+        raise RemediationExecutionNotFoundError
+    return execution

@@ -849,6 +849,7 @@ async def test_admin_execute_returns_durable_snapshot_and_never_calls_actuator(
         "status",
         "requested_by_user_id",
         "requested_at",
+        "completed_at",
         "updated_at",
     }
     assert body["proposal_id"] == str(proposal.id)
@@ -945,3 +946,107 @@ async def test_execute_eligibility_and_duplicate_errors_are_stable(
         )
     assert executions == 1
     assert events == 1
+
+
+@pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.OPERATOR, UserRole.ADMIN])
+async def test_all_roles_can_read_requested_execution(
+    role: UserRole,
+    client: AsyncClient,
+    incident: Incident,
+    auth_headers_factory: AuthHeadersFactory,
+    database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, proposer = await auth_headers_factory(UserRole.OPERATOR)
+    _, reviewer = await auth_headers_factory(UserRole.ADMIN)
+    proposal = await create_via_service(
+        database_session_factory, incident.id, proposer.id
+    )
+    await transition_via_service(
+        database_session_factory, proposal.id, reviewer.id, "approve"
+    )
+    async with database_session_factory() as session:
+        execution = RemediationExecution(
+            proposal_id=proposal.id,
+            action_kind=proposal.action_kind,
+            target=proposal.target,
+            requested_by_user_id=reviewer.id,
+        )
+        session.add(execution)
+        await session.commit()
+    headers, _ = await auth_headers_factory(role)
+
+    response = await client.get(
+        f"{PROPOSALS_PATH}/{proposal.id}/execution", headers=headers
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {
+        "id",
+        "proposal_id",
+        "action_kind",
+        "target",
+        "status",
+        "requested_by_user_id",
+        "requested_at",
+        "completed_at",
+        "updated_at",
+    }
+    assert body["status"] == "requested"
+    assert body["completed_at"] is None
+    assert "endpoint_url" not in body
+    assert "failure_kind" not in body
+
+
+async def test_execution_read_requires_auth_and_returns_stable_404(
+    client: AsyncClient,
+    auth_headers_factory: AuthHeadersFactory,
+) -> None:
+    proposal_id = uuid4()
+    anonymous = await client.get(f"{PROPOSALS_PATH}/{proposal_id}/execution")
+    assert anonymous.status_code == 401
+
+    headers, _ = await auth_headers_factory(UserRole.VIEWER)
+    missing = await client.get(
+        f"{PROPOSALS_PATH}/{proposal_id}/execution", headers=headers
+    )
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "Remediation execution not found"}
+
+
+async def test_execution_read_includes_terminal_completion_without_error_details(
+    client: AsyncClient,
+    incident: Incident,
+    auth_headers_factory: AuthHeadersFactory,
+    database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, proposer = await auth_headers_factory(UserRole.OPERATOR)
+    headers, reviewer = await auth_headers_factory(UserRole.ADMIN)
+    proposal = await create_via_service(
+        database_session_factory, incident.id, proposer.id
+    )
+    await transition_via_service(
+        database_session_factory, proposal.id, reviewer.id, "approve"
+    )
+    completed_at = datetime.now(UTC)
+    async with database_session_factory() as session:
+        session.add(
+            RemediationExecution(
+                proposal_id=proposal.id,
+                action_kind=proposal.action_kind,
+                target=proposal.target,
+                status="outcome_unknown",
+                requested_by_user_id=reviewer.id,
+                completed_at=completed_at,
+            )
+        )
+        await session.commit()
+
+    response = await client.get(
+        f"{PROPOSALS_PATH}/{proposal.id}/execution", headers=headers
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "outcome_unknown"
+    assert response.json()["completed_at"] is not None
+    assert "sensitive" not in response.text
