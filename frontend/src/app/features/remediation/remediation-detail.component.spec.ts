@@ -42,15 +42,16 @@ describe('RemediationDetailComponent', () => {
   const rejectProposal = vi.fn<(id: string, body: { rejection_reason: string }) => Observable<RemediationProposal>>();
   const getProposal = vi.fn<(id: string) => Observable<RemediationProposal>>();
   const getExecution = vi.fn<(id: string) => Observable<RemediationExecution>>();
+  const requestExecution = vi.fn<(id: string) => Observable<RemediationExecution>>();
   beforeEach(() => {
     getProposal.mockReset(); getExecution.mockReset(); approveProposal.mockReset();
-    rejectProposal.mockReset(); currentUser.set(null);
+    rejectProposal.mockReset(); requestExecution.mockReset(); currentUser.set(null);
     getProposal.mockReturnValue(of(proposal('pending_approval')));
     getExecution.mockReturnValue(of(execution('requested')));
     TestBed.configureTestingModule({
       providers: [
         provideRouter([{ path: 'remediation/:proposalId', component: RemediationDetailComponent }]),
-        { provide: RemediationApiService, useValue: { getProposal, getExecution, approveProposal, rejectProposal } },
+        { provide: RemediationApiService, useValue: { getProposal, getExecution, approveProposal, rejectProposal, requestExecution } },
         { provide: AuthService, useValue: { currentUser } },
       ],
     });
@@ -124,6 +125,8 @@ describe('RemediationDetailComponent', () => {
     expect(harness.routeNativeElement?.textContent).toContain('No execution has been requested');
     expect(getExecution).toHaveBeenCalledTimes(1);
     expect(approveProposal).toHaveBeenCalledTimes(1);
+    expect(harness.routeNativeElement?.textContent).toContain('Request execution');
+    expect(requestExecution).not.toHaveBeenCalled();
   });
 
   it('validates rejection, trims reason, keeps it after error and renders backend metadata', async () => {
@@ -389,4 +392,217 @@ describe('RemediationDetailComponent', () => {
     expect(harness.routeNativeElement?.textContent).not.toContain('payments-api');
     expect(getExecution).not.toHaveBeenCalled();
   });
+  it.each(['viewer', 'operator', 'admin'] as const)('allows only admin to request approved missing execution: %s', async (role) => {
+    asRole(role); getProposal.mockReturnValue(of(proposal('approved')));
+    getExecution.mockReturnValue(throwError(notFound));
+    const { harness, component } = await open();
+    harness.detectChanges();
+    expect(component.canRequestExecution(component.proposal()!)).toBe(role === 'admin');
+    expect(harness.routeNativeElement?.textContent).toContain('No execution has been requested');
+    expect(harness.routeNativeElement?.textContent?.includes('Request execution')).toBe(role === 'admin');
+  });
+
+  it('requires confirmation, displays action and target, and sends one request without optimistic state', async () => {
+    asRole('admin'); getProposal.mockReturnValue(of(proposal('approved')));
+    getExecution.mockReturnValue(throwError(notFound));
+    const pending = new Subject<RemediationExecution>(); requestExecution.mockReturnValue(pending);
+    const { harness, component } = await open();
+    component.openExecutionRequest(); harness.detectChanges();
+    const text = harness.routeNativeElement?.textContent ?? '';
+    expect(text).toContain('Request remediation execution?');
+    expect(text).toContain('Restart service');
+    expect(text).toContain('payments-api');
+    component.cancelExecutionRequest(); expect(requestExecution).not.toHaveBeenCalled();
+    component.openExecutionRequest(); component.confirmExecutionRequest(); component.confirmExecutionRequest();
+    harness.detectChanges();
+    expect(requestExecution).toHaveBeenCalledTimes(1);
+    expect(component.execution()).toBeNull();
+    expect(component.executionState()).toBe('missing');
+    expect(component.mutationState()).toBe('requesting-execution');
+    expect(harness.routeNativeElement?.textContent).toContain('Requesting execution');
+    expect(harness.routeNativeElement?.textContent).toContain('No execution has been requested');
+    expect(harness.routeNativeElement?.querySelector('nav button')?.hasAttribute('disabled')).toBe(true);
+    component.refresh(); expect(getProposal).toHaveBeenCalledTimes(1);
+    pending.next(execution('requested')); pending.complete(); harness.detectChanges();
+    expect(component.execution()).toEqual(execution('requested'));
+    expect(component.mutationState()).toBe('idle');
+    expect(component.executionRequestMode()).toBe('idle');
+    expect(harness.routeNativeElement?.textContent).toContain('Execution request accepted.');
+    expect(harness.routeNativeElement?.textContent).toContain('awaiting asynchronous processing');
+    expect(harness.routeNativeElement?.textContent).not.toContain('Confirm execution request');
+    expect(getExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['pending_approval', 'rejected'] as const)('never requests execution for %s', async (status) => {
+    asRole('admin'); getProposal.mockReturnValue(of(proposal(status)));
+    const { harness, component } = await open();
+    component.openExecutionRequest(); component.confirmExecutionRequest(); harness.detectChanges();
+    expect(requestExecution).not.toHaveBeenCalled();
+    expect(harness.routeNativeElement?.textContent).not.toContain('Request execution');
+  });
+
+  it.each(['loading', 'ready', 'error'] as const)('does not offer request when execution is %s', async (state) => {
+    asRole('admin'); getProposal.mockReturnValue(of(proposal('approved')));
+    if (state === 'loading') getExecution.mockReturnValue(new Subject<RemediationExecution>());
+    else if (state === 'ready') getExecution.mockReturnValue(of(execution('requested')));
+    else getExecution.mockReturnValue(throwError(() => new Error('private detail')));
+    const { harness, component } = await open(); harness.detectChanges();
+    expect(component.executionState()).toBe(state);
+    expect(harness.routeNativeElement?.textContent).not.toContain('Request execution');
+  });
+
+  it.each(['requested', 'in_progress', 'succeeded', 'failed', 'outcome_unknown'] as const)(
+    'keeps durable status %s read-only with precise language', async (status) => {
+      asRole('admin'); getProposal.mockReturnValue(of(proposal('approved')));
+      getExecution.mockReturnValue(of(execution(status)));
+      const { harness, component } = await open(); harness.detectChanges();
+      expect(component.canRequestExecution(component.proposal()!)).toBe(false);
+      expect(harness.routeNativeElement?.textContent).not.toMatch(/Request execution|Retry execution|Run again/);
+      const expected = {
+        requested: 'durably recorded', in_progress: 'recorded this execution as in progress',
+        succeeded: 'recorded as succeeded', failed: 'recorded as failed',
+        outcome_unknown: 'outcome could not be determined',
+      }[status];
+      expect(harness.routeNativeElement?.textContent).toContain(expected);
+    });
+
+  it('reconciles duplicate 409 with one GET and no second POST', async () => {
+    asRole('admin'); getProposal.mockReturnValue(of(proposal('approved')));
+    getExecution.mockReturnValueOnce(throwError(notFound)).mockReturnValueOnce(of(execution('in_progress')));
+    requestExecution.mockReturnValue(throwError(() => httpError(409,
+      'Execution has already been requested for this remediation proposal')));
+    const { harness, component } = await open();
+    component.openExecutionRequest(); component.confirmExecutionRequest(); harness.detectChanges();
+    expect(requestExecution).toHaveBeenCalledTimes(1);
+    expect(getExecution).toHaveBeenCalledTimes(2);
+    expect(component.execution()?.status).toBe('in_progress');
+    expect(harness.routeNativeElement?.textContent).toContain('Execution was already requested');
+    expect(harness.routeNativeElement?.textContent).not.toContain('Request execution');
+  });
+
+  it.each(['missing', 'failure'] as const)('keeps duplicate reconciliation %s unconfirmed until Refresh', async (result) => {
+    asRole('admin'); getProposal.mockReturnValue(of(proposal('approved')));
+    getExecution.mockReturnValueOnce(throwError(notFound)).mockReturnValueOnce(
+      throwError(() => result === 'missing' ? httpError(404) : new Error('private detail')))
+      .mockReturnValueOnce(throwError(notFound));
+    requestExecution.mockReturnValue(throwError(() => httpError(409,
+      'Execution has already been requested for this remediation proposal')));
+    const { harness, component } = await open();
+    component.openExecutionRequest(); component.confirmExecutionRequest(); harness.detectChanges();
+    expect(component.executionState()).toBe('unconfirmed');
+    expect(harness.routeNativeElement?.textContent).not.toContain('Request execution');
+    expect(harness.routeNativeElement?.textContent).toContain('Refresh before');
+    component.refresh(); harness.detectChanges();
+    expect(component.executionState()).toBe('missing');
+    expect(harness.routeNativeElement?.textContent).toContain('Request execution');
+    expect(requestExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['exists', 'missing', 'failure'] as const)('reconciles ambiguous POST failure when GET %s', async (result) => {
+    asRole('admin'); getProposal.mockReturnValue(of(proposal('approved')));
+    getExecution.mockReturnValueOnce(throwError(notFound)).mockReturnValueOnce(
+      result === 'exists' ? of(execution('requested')) :
+        throwError(() => result === 'missing' ? httpError(404) : new Error('private detail')));
+    requestExecution.mockReturnValue(throwError(() => new Error('transport private detail')));
+    const { harness, component } = await open();
+    component.openExecutionRequest(); component.confirmExecutionRequest(); harness.detectChanges();
+    expect(requestExecution).toHaveBeenCalledTimes(1);
+    expect(getExecution).toHaveBeenCalledTimes(2);
+    expect(component.executionState()).toBe(result === 'exists' ? 'ready' : result === 'missing' ? 'missing' : 'unconfirmed');
+    expect(harness.routeNativeElement?.textContent).toContain(result === 'exists'
+      ? 'An execution record exists' : result === 'missing'
+        ? 'No durable execution record was found' : 'Refresh before trying again');
+    expect(harness.routeNativeElement?.textContent?.includes('Request execution')).toBe(result === 'missing');
+    expect(harness.routeNativeElement?.textContent).not.toContain('private detail');
+    if (result === 'failure') {
+      getExecution.mockReturnValueOnce(throwError(notFound));
+      component.refresh(); harness.detectChanges();
+      expect(component.executionState()).toBe('missing');
+      expect(harness.routeNativeElement?.textContent).toContain('Request execution');
+    }
+  });
+
+  it('reloads proposal after exact not-approved 409 and applies returned state', async () => {
+    asRole('admin'); getProposal.mockReturnValueOnce(of(proposal('approved')))
+      .mockReturnValueOnce(of(proposal('rejected')));
+    getExecution.mockReturnValue(throwError(notFound));
+    requestExecution.mockReturnValue(throwError(() => httpError(409,
+      'Remediation proposal is not approved for execution')));
+    const { harness, component } = await open();
+    component.openExecutionRequest(); component.confirmExecutionRequest(); harness.detectChanges();
+    expect(requestExecution).toHaveBeenCalledTimes(1);
+    expect(getProposal).toHaveBeenCalledTimes(2);
+    expect(component.proposal()?.status).toBe('rejected');
+    expect(harness.routeNativeElement?.textContent).toContain('Proposal state no longer allows');
+    expect(harness.routeNativeElement?.textContent).not.toContain('Remediation proposal is not approved for execution');
+  });
+
+  it.each([403, 404] as const)('handles execute %s without exposing raw detail or clearing session', async (status) => {
+    asRole('admin'); getProposal.mockReturnValue(of(proposal('approved')));
+    getExecution.mockReturnValue(throwError(notFound));
+    requestExecution.mockReturnValue(throwError(() => httpError(status, 'private detail')));
+    const { harness, component } = await open();
+    component.openExecutionRequest(); component.confirmExecutionRequest(); harness.detectChanges();
+    expect(requestExecution).toHaveBeenCalledTimes(1);
+    expect(currentUser()?.role).toBe('admin');
+    expect(component.proposalState()).toBe(status === 404 ? 'not-found' : 'ready');
+    expect(harness.routeNativeElement?.textContent).toContain(status === 404
+      ? 'Remediation proposal not found.' : 'You do not have permission to request remediation execution.');
+    expect(harness.routeNativeElement?.textContent).not.toContain('private detail');
+  });
+
+  it('discards late execute POST across A to B and A to B to A', async () => {
+    asRole('admin'); getProposal.mockImplementation((proposalId) => of(proposal('approved', { id: proposalId })));
+    getExecution.mockReturnValue(throwError(notFound));
+    const first = new Subject<RemediationExecution>(); requestExecution.mockReturnValue(first);
+    const { component, router } = await open();
+    component.openExecutionRequest(); component.confirmExecutionRequest();
+    await router.navigateByUrl(`/remediation/${otherId}`);
+    first.next(execution('requested'));
+    expect(component.proposal()?.id).toBe(otherId);
+    expect(component.execution()).toBeNull();
+    await router.navigateByUrl(`/remediation/${id}`);
+    const second = new Subject<RemediationExecution>(); requestExecution.mockReturnValue(second);
+    component.openExecutionRequest(); component.confirmExecutionRequest();
+    await router.navigateByUrl(`/remediation/${otherId}`);
+    await router.navigateByUrl(`/remediation/${id}`);
+    second.next(execution('requested'));
+    expect(component.proposal()?.id).toBe(id);
+    expect(component.execution()).toBeNull();
+    expect(component.executionState()).toBe('missing');
+  });
+
+  it('discards late reconciliation GET from obsolete generation', async () => {
+    asRole('admin'); getProposal.mockImplementation((proposalId) => of(proposal('approved', { id: proposalId })));
+    const lateRead = new Subject<RemediationExecution>();
+    getExecution.mockReturnValueOnce(throwError(notFound)).mockReturnValueOnce(lateRead)
+      .mockReturnValueOnce(throwError(notFound));
+    requestExecution.mockReturnValue(throwError(() => new Error('transport')));
+    const { component, router } = await open();
+    component.openExecutionRequest(); component.confirmExecutionRequest();
+    expect(component.executionState()).toBe('reconciling');
+    await router.navigateByUrl(`/remediation/${otherId}`);
+    lateRead.next(execution('succeeded'));
+    expect(component.proposal()?.id).toBe(otherId);
+    expect(component.execution()).toBeNull();
+    expect(component.executionState()).toBe('missing');
+  });
+
+  it('uses manual Refresh to monitor status and external requests', async () => {
+    asRole('admin'); getProposal.mockReturnValue(of(proposal('approved')));
+    getExecution.mockReturnValueOnce(throwError(notFound))
+      .mockReturnValueOnce(of(execution('requested')))
+      .mockReturnValueOnce(of(execution('in_progress')))
+      .mockReturnValueOnce(of(execution('succeeded')));
+    const { harness, component } = await open();
+    expect(component.executionState()).toBe('missing');
+    component.refresh(); harness.detectChanges(); expect(component.execution()?.status).toBe('requested');
+    component.refresh(); harness.detectChanges(); expect(component.execution()?.status).toBe('in_progress');
+    component.refresh(); harness.detectChanges(); expect(component.execution()?.status).toBe('succeeded');
+    expect(getProposal).toHaveBeenCalledTimes(4);
+    expect(getExecution).toHaveBeenCalledTimes(4);
+    expect(requestExecution).not.toHaveBeenCalled();
+    expect(harness.routeNativeElement?.textContent).not.toContain('Request execution');
+  });
+
 });

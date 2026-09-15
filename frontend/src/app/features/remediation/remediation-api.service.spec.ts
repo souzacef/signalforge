@@ -102,4 +102,14 @@ describe('RemediationApiService', () => {
     executionRequest.flush(execution);
     await expect(executionResult).resolves.toEqual(execution);
   });
+  it('requests execution with a null body and uses the backend execution response', async () => {
+    const result = firstValueFrom(api.requestExecution(id));
+    const request = http.expectOne(`/api/v1/remediation-proposals/${id}/execute`);
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toBeNull();
+    expect(request.request.headers.has('Authorization')).toBe(false);
+    request.flush(execution, { status: 202, statusText: 'Accepted' });
+    await expect(result).resolves.toEqual(execution);
+  });
+
 });

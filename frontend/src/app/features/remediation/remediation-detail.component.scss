@@ -34,10 +34,10 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--sf-accent); out
   .metadata-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
-.decision-feedback, .decision-progress { margin: 0; padding: 12px 16px; min-width: 0;
+.decision-feedback, .execution-feedback, .decision-progress { margin: 0; padding: 12px 16px; min-width: 0;
   border: 1px solid var(--sf-border-strong); border-radius: var(--sf-radius-md);
   background: var(--sf-surface); overflow-wrap: anywhere; }
-.decision-feedback { color: var(--sf-accent); }
+.decision-feedback, .execution-feedback { color: var(--sf-accent); }
 .decision-progress { color: var(--sf-text-muted); }
 .decision-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .decision-panel { display: grid; gap: 12px; margin-top: 18px; padding: 16px; min-width: 0;
@@ -51,4 +51,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--sf-accent); out
 }
 @media (max-width: 640px) { .decision-panel { padding: 12px; }
   .decision-actions button { max-width: 100%; }
+}
+
+.execution-confirmation {
+  .metadata-grid { margin-top: 4px; }
+  dd { overflow-wrap: anywhere; }
 }
