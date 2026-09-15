@@ -11,3 +11,15 @@ describe('Incident detail routing', () => {
     expect(detail?.canActivate).toBeUndefined();
   });
 });
+
+describe('Remediation routing', () => {
+  it('places queue and detail under the authenticated shell for all authenticated roles', () => {
+    const shell = routes.find((route) => route.path === '');
+    expect(shell?.canActivate).toContain(authGuard);
+    for (const path of ['remediation', 'remediation/:proposalId']) {
+      const route = shell?.children?.find((child) => child.path === path);
+      expect(route?.loadComponent).toBeDefined();
+      expect(route?.canActivate).toBeUndefined();
+    }
+  });
+});

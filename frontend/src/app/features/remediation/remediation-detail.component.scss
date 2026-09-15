@@ -1,0 +1,35 @@
+:host { display: block; min-width: 0; }
+.detail-page { display: grid; gap: 18px; max-width: 1100px; min-width: 0; margin: 0 auto; }
+.detail-nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.detail-header, .detail-card, .message-state { min-width: 0; border: 1px solid var(--sf-border); border-radius: var(--sf-radius-md);
+  background: var(--sf-surface); padding: 22px; }
+.detail-header {
+  .eyebrow { color: var(--sf-accent); letter-spacing: .14em; text-transform: uppercase; margin: 0 0 8px; }
+  h1 { margin: 0; line-height: 1.15; }
+}
+.headline-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 16px;
+  strong { overflow-wrap: anywhere; }
+}
+.detail-card {
+  h2 { margin: 0 0 16px; font-size: 1.05rem; }
+  p { color: var(--sf-text-muted); }
+}
+.metadata-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; margin: 0;
+  div { min-width: 0; }
+  .full-width { grid-column: 1 / -1; }
+  dt { color: var(--sf-text-muted); font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; }
+  dd { margin: 5px 0 0; overflow-wrap: anywhere; line-height: 1.5; }
+}
+.plain-reason { white-space: pre-wrap; }
+.boundary-copy, .review-note { max-width: 760px; }
+.execution-status { color: var(--sf-text) !important; font-weight: 700; }
+.status-badge { display: inline-flex; border: 1px solid var(--sf-border-strong); border-radius: 999px;
+  padding: 4px 10px; color: #c5d2df; font-size: .72rem; font-weight: 700; }
+.status-pending_approval { color: #f8c985; border-color: rgb(244 163 64 / 38%); }
+.status-approved { color: #9ee8f6; border-color: rgb(83 211 237 / 34%); }
+.status-rejected { color: #ffb8bc; border-color: rgb(255 107 114 / 48%); }
+.message-state { h1 { margin: 0; font-size: 1.2rem; } p { color: var(--sf-text-muted); } mat-progress-bar { margin-top: 16px; } }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--sf-accent); outline-offset: 3px; }
+@media (max-width: 640px) { .detail-header, .detail-card, .message-state { padding: 16px; }
+  .metadata-grid { grid-template-columns: minmax(0, 1fr); }
+}
