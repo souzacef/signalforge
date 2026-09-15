@@ -4,13 +4,15 @@ import asyncio
 import json
 import logging
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import Literal
+from typing import Final, Literal
 from uuid import UUID, uuid4
 
 from aio_pika import IncomingMessage
+from opentelemetry.trace import SpanKind, Tracer
 from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
@@ -20,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from signalforge.consumers.models import ProcessedEvent
 from signalforge.core.config import get_remediation_execution_settings
 from signalforge.db.errors import DatabaseTransportError
+from signalforge.observability.messaging import mark_span_error, messaging_attributes
+from signalforge.observability.propagation import extract_trace_context
 from signalforge.remediation.errors import (
     RemediationExecutionRejectedError,
     RemediationExecutionTimeoutError,
@@ -42,6 +46,11 @@ from signalforge.remediation.models import (
 )
 
 CONSUMER_NAME = "remediation-execution-consumer"
+PROCESS_DESTINATION: Final = (
+    "signalforge.events:remediation.execution.requested:"
+    "signalforge.remediation-execution"
+)
+PROCESS_SPAN_NAME: Final = f"process {PROCESS_DESTINATION}"
 logger = logging.getLogger(__name__)
 
 
@@ -387,7 +396,7 @@ async def process_event(
     )
 
 
-async def handle_message(
+async def _handle_message(
     message: IncomingMessage,
     executor: RemediationExecutor,
     session_factory: async_sessionmaker[AsyncSession],
@@ -420,3 +429,54 @@ async def handle_message(
     else:
         await message.ack()
     return result
+
+
+def _safe_message_id(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 36:
+        return None
+    try:
+        normalized = str(UUID(value))
+    except ValueError:
+        return None
+    return normalized if normalized == value.lower() else None
+
+
+async def handle_message(
+    message: IncomingMessage,
+    executor: RemediationExecutor,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    lease_seconds: float | None = None,
+    tracer: Tracer | None = None,
+) -> ProcessingResult:
+    """Process and settle one delivery, optionally under one consumer span."""
+    if tracer is None:
+        return await _handle_message(
+            message, executor, session_factory, lease_seconds=lease_seconds
+        )
+
+    raw_headers = getattr(message, "headers", None)
+    headers = raw_headers if isinstance(raw_headers, Mapping) else None
+    parent_context = extract_trace_context(headers)
+    attributes = messaging_attributes(
+        operation_name="process",
+        operation_type="process",
+        destination_name=PROCESS_DESTINATION,
+        routing_key="remediation.execution.requested",
+        message_id=_safe_message_id(getattr(message, "message_id", None)),
+    )
+    with tracer.start_as_current_span(
+        PROCESS_SPAN_NAME,
+        context=parent_context,
+        kind=SpanKind.CONSUMER,
+        attributes=attributes,
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        try:
+            return await _handle_message(
+                message, executor, session_factory, lease_seconds=lease_seconds
+            )
+        except BaseException as error:
+            mark_span_error(span, error)
+            raise

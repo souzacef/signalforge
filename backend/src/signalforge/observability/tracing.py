@@ -23,11 +23,13 @@ API_SERVICE_NAME: Final = "signalforge-api"
 DISPATCHER_SERVICE_NAME: Final = "signalforge-dispatcher"
 INCIDENT_CONSUMER_SERVICE_NAME: Final = "signalforge-incident-consumer"
 ENRICHMENT_WORKER_SERVICE_NAME: Final = "signalforge-enrichment-worker"
+REMEDIATION_WORKER_SERVICE_NAME: Final = "signalforge-remediation-worker"
 type ServiceName = Literal[
     "signalforge-api",
     "signalforge-dispatcher",
     "signalforge-incident-consumer",
     "signalforge-enrichment-worker",
+    "signalforge-remediation-worker",
 ]
 _SERVICE_NAMES: Final = frozenset(
     {
@@ -35,6 +37,7 @@ _SERVICE_NAMES: Final = frozenset(
         DISPATCHER_SERVICE_NAME,
         INCIDENT_CONSUMER_SERVICE_NAME,
         ENRICHMENT_WORKER_SERVICE_NAME,
+        REMEDIATION_WORKER_SERVICE_NAME,
     }
 )
 SpanProcessorFactory = Callable[[SpanExporter], SpanProcessor]

@@ -1,11 +1,20 @@
+import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
+from time import monotonic
 from typing import Protocol
 from uuid import UUID
 
 import httpx
+from opentelemetry.semconv.attributes.http_attributes import HTTP_RESPONSE_STATUS_CODE
+from opentelemetry.trace import SpanKind, Tracer
 
 from signalforge.core.config import RemediationExecutionSettings
+from signalforge.observability.messaging import mark_span_error
+from signalforge.observability.metrics import (
+    RemediationExecutorMetricResult,
+    RemediationExecutorMetrics,
+)
 from signalforge.remediation.errors import (
     RemediationExecutionRejectedError,
     RemediationExecutionTimeoutError,
@@ -69,18 +78,66 @@ def command_from_approved_proposal(
 
 
 class AllowlistedHttpRemediationExecutor:
-    def __init__(self, restart_adapter: RestartServiceAdapter) -> None:
+    def __init__(
+        self,
+        restart_adapter: RestartServiceAdapter,
+        metrics: RemediationExecutorMetrics | None = None,
+    ) -> None:
         self._restart_adapter = restart_adapter
+        self._metrics = metrics
 
     async def execute(
         self,
         command: RemediationCommand,
     ) -> RemediationExecutionResult:
-        if command.action_kind is RemediationActionKind.RESTART_SERVICE:
-            return await self._restart_adapter.restart(command)
-        raise UnsupportedRemediationActionError(
-            f"unsupported remediation action: {command.action_kind}"
-        )
+        started = monotonic()
+        metric_result = RemediationExecutorMetricResult.UNEXPECTED
+        try:
+            if command.action_kind is RemediationActionKind.RESTART_SERVICE:
+                result = await self._restart_adapter.restart(command)
+            else:
+                raise UnsupportedRemediationActionError(
+                    f"unsupported remediation action: {command.action_kind}"
+                )
+        except RemediationTargetNotAllowedError:
+            metric_result = RemediationExecutorMetricResult.TARGET_NOT_ALLOWED
+            raise
+        except UnsupportedRemediationActionError:
+            metric_result = RemediationExecutorMetricResult.UNSUPPORTED_ACTION
+            raise
+        except RemediationExecutionRejectedError as error:
+            metric_result = (
+                RemediationExecutorMetricResult.HTTP_REJECTED
+                if 300 <= error.status_code < 500
+                else RemediationExecutorMetricResult.HTTP_SERVER_ERROR
+                if error.status_code >= 500
+                else RemediationExecutorMetricResult.UNEXPECTED
+            )
+            raise
+        except RemediationExecutionTimeoutError:
+            metric_result = RemediationExecutorMetricResult.TIMEOUT
+            raise
+        except RemediationExecutionTransportError:
+            metric_result = RemediationExecutorMetricResult.TRANSPORT
+            raise
+        except asyncio.CancelledError:
+            metric_result = RemediationExecutorMetricResult.INTERRUPTED
+            raise
+        except Exception:
+            metric_result = RemediationExecutorMetricResult.UNEXPECTED
+            raise
+        else:
+            metric_result = RemediationExecutorMetricResult.SUCCESS
+            return result
+        finally:
+            if self._metrics is not None:
+                try:
+                    self._metrics.record(
+                        result=metric_result,
+                        duration=monotonic() - started,
+                    )
+                except Exception:
+                    pass
 
 
 class HttpRestartServiceAdapter:
@@ -90,6 +147,7 @@ class HttpRestartServiceAdapter:
         self,
         settings: RemediationExecutionSettings,
         client: httpx.AsyncClient | None = None,
+        tracer: Tracer | None = None,
     ) -> None:
         self._endpoints = {
             target: str(endpoint)
@@ -97,6 +155,7 @@ class HttpRestartServiceAdapter:
         }
         self._timeout = settings.request_timeout_seconds
         self._client = client
+        self._tracer = tracer
 
     async def restart(
         self,
@@ -108,6 +167,37 @@ class HttpRestartServiceAdapter:
                 f"remediation target is not allowlisted: {command.target}"
             )
 
+        if self._tracer is None:
+            return await self._restart_allowlisted(command, endpoint)
+
+        with self._tracer.start_as_current_span(
+            "remediation restart_service",
+            kind=SpanKind.CLIENT,
+            attributes={"remediation.action_kind": "restart_service"},
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
+            try:
+                result, status_code = await self._restart_allowlisted_with_status(
+                    command, endpoint
+                )
+            except BaseException as error:
+                if isinstance(error, RemediationExecutionRejectedError):
+                    span.set_attribute(HTTP_RESPONSE_STATUS_CODE, error.status_code)
+                mark_span_error(span, error)
+                raise
+            span.set_attribute(HTTP_RESPONSE_STATUS_CODE, status_code)
+            return result
+
+    async def _restart_allowlisted(
+        self, command: RemediationCommand, endpoint: str
+    ) -> RemediationExecutionResult:
+        result, _ = await self._restart_allowlisted_with_status(command, endpoint)
+        return result
+
+    async def _restart_allowlisted_with_status(
+        self, command: RemediationCommand, endpoint: str
+    ) -> tuple[RemediationExecutionResult, int]:
         if self._client is not None:
             response = await self._post(self._client, endpoint, command.proposal_id)
         else:
@@ -116,11 +206,14 @@ class HttpRestartServiceAdapter:
 
         if not 200 <= response.status_code < 300:
             raise RemediationExecutionRejectedError(response.status_code)
-        return RemediationExecutionResult(
-            proposal_id=command.proposal_id,
-            action_kind=command.action_kind,
-            target=command.target,
-            outcome=RemediationExecutionOutcome.SUCCEEDED,
+        return (
+            RemediationExecutionResult(
+                proposal_id=command.proposal_id,
+                action_kind=command.action_kind,
+                target=command.target,
+                outcome=RemediationExecutionOutcome.SUCCEEDED,
+            ),
+            response.status_code,
         )
 
     async def _post(

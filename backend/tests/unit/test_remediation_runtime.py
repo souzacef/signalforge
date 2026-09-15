@@ -16,6 +16,14 @@ from sqlalchemy.exc import OperationalError
 
 from signalforge.core.config import RemediationExecutionSettings, Settings
 from signalforge.db.errors import DatabaseTransportError
+from signalforge.observability.metrics import (
+    RemediationMessageMetricResult,
+    RemediationWorkerMetrics,
+)
+from signalforge.observability.tracing import (
+    REMEDIATION_WORKER_SERVICE_NAME,
+    TracingRuntime,
+)
 from signalforge.remediation import runtime
 from signalforge.remediation.consumer import InvalidEventError, ProcessingResult
 from signalforge.remediation.execution import (
@@ -202,6 +210,8 @@ def test_worker_settings_are_runtime_only_with_safe_defaults() -> None:
     assert not hasattr(configured, "restart_endpoints")
     assert not hasattr(configured, "request_timeout_seconds")
     assert not hasattr(configured, "attempt_lease_seconds")
+    assert configured.metrics_host == "127.0.0.1"
+    assert configured.metrics_port == 9104
     assert configured.remediation_worker_reconnect_base_seconds == 1
     assert configured.remediation_worker_reconnect_max_seconds == 30
     assert configured.remediation_worker_processing_retry_base_seconds == 1
@@ -327,8 +337,10 @@ async def test_production_executor_owns_one_nonredirecting_client(
 ) -> None:
     engine, _ = install_resources(monkeypatch)
     created_clients: list[FakeClient] = []
-    adapters: list[tuple[object, object]] = []
-    wrappers: list[object] = []
+    adapters: list[tuple[object, object, object]] = []
+    wrappers: list[tuple[object, object]] = []
+    actuator_tracer = object()
+    executor_metrics = object()
 
     class FakeClient:
         def __init__(self, *, follow_redirects: bool) -> None:
@@ -340,12 +352,14 @@ async def test_production_executor_owns_one_nonredirecting_client(
             self.close_calls += 1
 
     class FakeAdapter:
-        def __init__(self, configured: object, *, client: object) -> None:
-            adapters.append((configured, client))
+        def __init__(
+            self, configured: object, *, client: object, tracer: object
+        ) -> None:
+            adapters.append((configured, client, tracer))
 
     class FakeWrappedExecutor:
-        def __init__(self, adapter: object) -> None:
-            wrappers.append(adapter)
+        def __init__(self, adapter: object, *, metrics: object) -> None:
+            wrappers.append((adapter, metrics))
 
         async def execute(self, actual_command: RemediationCommand) -> None:
             raise AssertionError("no work should start after stop")
@@ -359,14 +373,21 @@ async def test_production_executor_owns_one_nonredirecting_client(
     stop.set()
     configured_execution = execution_settings()
 
-    await run_worker(settings(), configured_execution, stop_event=stop)
+    await run_worker(
+        settings(),
+        configured_execution,
+        stop_event=stop,
+        executor_metrics=cast(Any, executor_metrics),
+        actuator_tracer=cast(Any, actuator_tracer),
+    )
 
     assert len(created_clients) == 1
     assert created_clients[0].follow_redirects is False
     assert created_clients[0].close_calls == 1
-    assert adapters == [(configured_execution, created_clients[0])]
+    assert adapters == [(configured_execution, created_clients[0], actuator_tracer)]
     assert len(wrappers) == 1
-    assert isinstance(wrappers[0], FakeAdapter)
+    assert isinstance(wrappers[0][0], FakeAdapter)
+    assert wrappers[0][1] is executor_metrics
     assert engine.dispose_calls == 1
 
 
@@ -1057,3 +1078,312 @@ async def test_database_backoff_is_interruptible_by_shutdown(
     assert await asyncio.wait_for(task, timeout=1) is runtime._ConsumeOutcome.STOPPED
     assert message.nack_calls == [True]
     assert executor.calls == 0
+
+
+def test_worker_metrics_port_is_configurable_and_validated() -> None:
+    assert settings(metrics_port=19104).metrics_port == 19104
+    for invalid in (0, 65536):
+        with pytest.raises(ValidationError):
+            settings(metrics_port=invalid)
+
+
+def test_tracing_startup_uses_remediation_identity_and_degrades_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured: list[tuple[object, object]] = []
+    expected = TracingRuntime()
+
+    def create(configured: object, *, service_name: object) -> TracingRuntime:
+        captured.append((configured, service_name))
+        return expected
+
+    monkeypatch.setattr(runtime, "get_tracing_settings", lambda: object())
+    monkeypatch.setattr(runtime, "create_tracing_runtime", create)
+    assert runtime._create_worker_tracing_runtime() is expected
+    assert captured[0][1] == REMEDIATION_WORKER_SERVICE_NAME
+
+    secret = "PRIVATE_TRACING_STARTUP_DETAIL"
+
+    def fail(*args: object, **kwargs: object) -> TracingRuntime:
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(runtime, "create_tracing_runtime", fail)
+    with caplog.at_level(logging.ERROR):
+        disabled = runtime._create_worker_tracing_runtime()
+    assert disabled.enabled is False
+    assert secret not in caplog.text
+    assert any(
+        getattr(record, "exception_type", None) == "RuntimeError"
+        for record in caplog.records
+    )
+
+
+async def test_entrypoint_owns_shared_metrics_and_tracing_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = settings()
+    configured_execution = execution_settings()
+    consumer_tracer = object()
+    actuator_tracer = object()
+    order: list[str] = []
+    starts: list[tuple[object, str, int]] = []
+    worker_kwargs: list[dict[str, object]] = []
+
+    class FakeTracingRuntime:
+        shutdown_calls = 0
+
+        def get_tracer(self, name: str) -> object:
+            return {
+                "signalforge.remediation.consumer": consumer_tracer,
+                "signalforge.remediation.http_actuator": actuator_tracer,
+            }[name]
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+            order.append("tracing_shutdown")
+
+    class FakeMetricsServer:
+        def stop(self) -> None:
+            order.append("metrics_stop")
+
+    tracing = FakeTracingRuntime()
+    monkeypatch.setattr(runtime, "RemediationWorkerSettings", lambda: configured)
+    monkeypatch.setattr(
+        runtime, "RemediationExecutionSettings", lambda: configured_execution
+    )
+    monkeypatch.setattr(runtime, "_create_worker_tracing_runtime", lambda: tracing)
+
+    def start(registry: object, *, host: str, port: int) -> FakeMetricsServer:
+        starts.append((registry, host, port))
+        return FakeMetricsServer()
+
+    async def run(*args: object, **kwargs: object) -> None:
+        worker_kwargs.append(dict(kwargs))
+        order.append("worker_done")
+
+    monkeypatch.setattr(runtime.MetricsHttpServer, "start", start)
+    monkeypatch.setattr(runtime, "run_worker", run)
+    monkeypatch.setattr(runtime, "install_signal_handlers", lambda *args: ())
+    monkeypatch.setattr(runtime, "remove_signal_handlers", lambda *args: None)
+
+    await runtime.async_main()
+
+    assert len(starts) == 1
+    assert starts[0][1:] == ("127.0.0.1", 9104)
+    assert len(worker_kwargs) == 1
+    kwargs = worker_kwargs[0]
+    worker_metrics = cast(RemediationWorkerMetrics, kwargs["metrics"])
+    executor_metrics = kwargs["executor_metrics"]
+    assert starts[0][0] is worker_metrics.registry
+    assert cast(Any, executor_metrics).registry is worker_metrics.registry
+    assert kwargs["tracer"] is consumer_tracer
+    assert kwargs["actuator_tracer"] is actuator_tracer
+    assert tracing.shutdown_calls == 1
+    assert order == ["worker_done", "metrics_stop", "tracing_shutdown"]
+
+
+async def test_metrics_startup_failure_does_not_stop_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracing = TracingRuntime()
+    ran = 0
+    monkeypatch.setattr(runtime, "RemediationWorkerSettings", lambda: settings())
+    monkeypatch.setattr(
+        runtime, "RemediationExecutionSettings", lambda: execution_settings()
+    )
+    monkeypatch.setattr(runtime, "_create_worker_tracing_runtime", lambda: tracing)
+    monkeypatch.setattr(
+        runtime.MetricsHttpServer,
+        "start",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
+    monkeypatch.setattr(runtime, "install_signal_handlers", lambda *args: ())
+    monkeypatch.setattr(runtime, "remove_signal_handlers", lambda *args: None)
+
+    async def run(*args: object, **kwargs: object) -> None:
+        nonlocal ran
+        ran += 1
+
+    monkeypatch.setattr(runtime, "run_worker", run)
+    await runtime.async_main()
+    assert ran == 1
+
+
+async def test_metrics_cleanup_failure_does_not_hide_worker_failure_and_tracing_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeTracingRuntime:
+        shutdown_calls = 0
+
+        def get_tracer(self, name: str) -> None:
+            return None
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+
+    class FailingMetricsServer:
+        def stop(self) -> None:
+            raise RuntimeError("metrics cleanup unavailable")
+
+    tracing = FakeTracingRuntime()
+    monkeypatch.setattr(runtime, "RemediationWorkerSettings", lambda: settings())
+    monkeypatch.setattr(
+        runtime, "RemediationExecutionSettings", lambda: execution_settings()
+    )
+    monkeypatch.setattr(runtime, "_create_worker_tracing_runtime", lambda: tracing)
+    monkeypatch.setattr(
+        runtime.MetricsHttpServer,
+        "start",
+        lambda *args, **kwargs: FailingMetricsServer(),
+    )
+    monkeypatch.setattr(runtime, "install_signal_handlers", lambda *args: ())
+    monkeypatch.setattr(runtime, "remove_signal_handlers", lambda *args: None)
+
+    async def fail(*args: object, **kwargs: object) -> None:
+        raise ValueError("original worker failure")
+
+    monkeypatch.setattr(runtime, "run_worker", fail)
+    with pytest.raises(ValueError, match="original worker failure"):
+        await runtime.async_main()
+    assert tracing.shutdown_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("processed", RemediationMessageMetricResult.PROCESSED),
+        ("duplicate", RemediationMessageMetricResult.DUPLICATE),
+        ("in_progress", RemediationMessageMetricResult.IN_PROGRESS),
+        ("invalid", RemediationMessageMetricResult.REJECTED),
+        ("database", RemediationMessageMetricResult.REQUEUED),
+    ],
+)
+async def test_runtime_records_exactly_one_message_outcome(
+    case: str,
+    expected: RemediationMessageMetricResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage()
+    broker = cast(RemediationBroker, FakeBroker(FakeIterator([message])))
+    stop = asyncio.Event()
+    metrics = RemediationWorkerMetrics()
+    tracer = object()
+
+    async def handle(*args: object, **kwargs: object) -> ProcessingResult:
+        assert kwargs["tracer"] is tracer
+        stop.set()
+        if case == "invalid":
+            raise InvalidEventError("invalid_event")
+        if case == "database":
+            raise DatabaseTransportError()
+        return {
+            "processed": ProcessingResult.PROCESSED,
+            "duplicate": ProcessingResult.DUPLICATE,
+            "in_progress": ProcessingResult.IN_PROGRESS,
+        }[case]
+
+    monkeypatch.setattr(runtime, "handle_message", handle)
+    result = await runtime._consume_connected(
+        broker,
+        RecordingExecutor(),
+        cast(Any, object()),
+        settings(),
+        execution_settings(),
+        stop,
+        lambda: 0,
+        metrics,
+        cast(Any, tracer),
+    )
+    assert result is runtime._ConsumeOutcome.STOPPED
+    assert (
+        metrics.registry.get_sample_value(
+            "signalforge_remediation_messages_total", {"result": expected.value}
+        )
+        == 1
+    )
+    total = sum(
+        sample.value
+        for sample in metrics.messages.collect()[0].samples
+        if sample.name == "signalforge_remediation_messages_total"
+    )
+    assert total == 1
+
+
+async def test_runtime_metric_failure_does_not_change_worker_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage()
+    broker = cast(RemediationBroker, FakeBroker(FakeIterator([message])))
+    stop = asyncio.Event()
+    stop.set()
+
+    class FailingMetrics:
+        def record(self, result: object) -> None:
+            raise RuntimeError("metrics unavailable")
+
+    async def run_handler(
+        *args: object, **kwargs: object
+    ) -> tuple[ProcessingResult, bool]:
+        return ProcessingResult.PROCESSED, True
+
+    monkeypatch.setattr(runtime, "_run_handler_or_drain", run_handler)
+    stop.clear()
+    result = await runtime._consume_connected(
+        broker,
+        RecordingExecutor(),
+        cast(Any, object()),
+        settings(),
+        execution_settings(),
+        stop,
+        lambda: 0,
+        cast(Any, FailingMetrics()),
+    )
+    assert result is runtime._ConsumeOutcome.STOPPED
+
+
+async def test_tracing_cleanup_failure_does_not_hide_worker_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "PRIVATE_TRACING_SHUTDOWN_DETAIL"
+
+    class FailingTracingRuntime:
+        shutdown_calls = 0
+
+        def get_tracer(self, name: str) -> None:
+            return None
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+            raise RuntimeError(secret)
+
+    tracing = FailingTracingRuntime()
+    monkeypatch.setattr(runtime, "RemediationWorkerSettings", lambda: settings())
+    monkeypatch.setattr(
+        runtime, "RemediationExecutionSettings", lambda: execution_settings()
+    )
+    monkeypatch.setattr(runtime, "_create_worker_tracing_runtime", lambda: tracing)
+    monkeypatch.setattr(
+        runtime.MetricsHttpServer,
+        "start",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("metrics off")),
+    )
+    monkeypatch.setattr(runtime, "install_signal_handlers", lambda *args: ())
+    monkeypatch.setattr(runtime, "remove_signal_handlers", lambda *args: None)
+
+    async def fail(*args: object, **kwargs: object) -> None:
+        raise ValueError("original worker failure")
+
+    monkeypatch.setattr(runtime, "run_worker", fail)
+    with (
+        caplog.at_level(logging.ERROR),
+        pytest.raises(ValueError, match="original worker failure"),
+    ):
+        await runtime.async_main()
+    assert tracing.shutdown_calls == 1
+    assert secret not in caplog.text
+    assert any(
+        getattr(record, "exception_type", None) == "RuntimeError"
+        for record in caplog.records
+    )
