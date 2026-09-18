@@ -1,7 +1,9 @@
+import json
 from functools import lru_cache
-from typing import Annotated, Self
+from typing import Annotated, Self, cast
 
 from pydantic import (
+    BeforeValidator,
     Field,
     HttpUrl,
     PostgresDsn,
@@ -10,12 +12,23 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from signalforge.remediation.targets import ServiceTarget
 
 MetricsHost = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 MetricsPort = Annotated[int, Field(ge=1, le=65535)]
+
+
+def _decode_json_mapping(value: object) -> object:
+    if isinstance(value, str):
+        return cast(object, json.loads(value))
+    return value
+
+
+RestartEndpoints = Annotated[
+    dict[ServiceTarget, HttpUrl], NoDecode, BeforeValidator(_decode_json_mapping)
+]
 
 
 class DatabaseSettings(BaseSettings):
@@ -26,9 +39,16 @@ class DatabaseSettings(BaseSettings):
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     database_url: PostgresDsn
+
+    @model_validator(mode="after")
+    def require_asyncpg_driver(self) -> Self:
+        if self.database_url.scheme != "postgresql+asyncpg":
+            raise ValueError("database_url must use the postgresql+asyncpg driver")
+        return self
 
 
 class Settings(DatabaseSettings):
@@ -93,7 +113,7 @@ class RemediationExecutionSettings(BaseSettings):
         hide_input_in_errors=True,
     )
 
-    restart_endpoints: dict[ServiceTarget, HttpUrl] = Field(default_factory=dict)
+    restart_endpoints: RestartEndpoints = Field(default_factory=dict)
     request_timeout_seconds: Annotated[
         float, Field(gt=0, le=30, allow_inf_nan=False)
     ] = 5.0

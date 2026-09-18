@@ -12,7 +12,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-signalforge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-signalforge-local}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - signalforge-postgres-data:/var/lib/postgresql
     healthcheck:
@@ -48,7 +48,7 @@ services:
       retries: 3
       start_period: 10s
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
 
   frontend:
     image: signalforge-frontend:local

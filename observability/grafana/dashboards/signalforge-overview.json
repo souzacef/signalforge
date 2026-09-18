@@ -263,7 +263,7 @@
       "id": 6,
       "type": "timeseries",
       "title": "HTTP latency · p50 / p95",
-      "description": "Overall request latency from the existing histogram; excludes health and metrics routes.",
+      "description": "Overall request latency from the existing histogram; excludes the metrics route.",
       "gridPos": {
         "x": 0,
         "y": 15,

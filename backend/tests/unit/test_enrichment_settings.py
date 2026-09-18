@@ -11,7 +11,7 @@ def test_gemini_settings_use_secret_and_current_flash_default(
     monkeypatch.setenv("SIGNALFORGE_GEMINI_API_KEY", secret)
     monkeypatch.delenv("SIGNALFORGE_GEMINI_MODEL", raising=False)
 
-    settings = EnrichmentSettings()  # type: ignore[call-arg]
+    settings = EnrichmentSettings(_env_file=None)  # type: ignore[call-arg]
 
     assert settings.gemini_api_key.get_secret_value() == secret
     assert secret not in repr(settings)
@@ -24,4 +24,4 @@ def test_gemini_settings_require_key_without_affecting_api_settings(
     monkeypatch.delenv("SIGNALFORGE_GEMINI_API_KEY", raising=False)
 
     with pytest.raises(ValidationError):
-        EnrichmentSettings()  # type: ignore[call-arg]
+        EnrichmentSettings(_env_file=None)  # type: ignore[call-arg]
