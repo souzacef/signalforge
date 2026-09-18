@@ -1,9 +1,20 @@
+import os
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from signalforge.core.config import DatabaseSettings, RemediationExecutionSettings
+
+
+def test_interactive_runtime_overrides_are_sanitized() -> None:
+    for name in (
+        "SIGNALFORGE_TRACING_ENABLED",
+        "SIGNALFORGE_OTLP_TRACES_ENDPOINT",
+        "SIGNALFORGE_TRACING_SAMPLE_RATIO",
+        "SIGNALFORGE_REMEDIATION_RESTART_ENDPOINTS",
+    ):
+        assert name not in os.environ
 
 
 def test_database_settings_require_asyncpg_driver() -> None:
