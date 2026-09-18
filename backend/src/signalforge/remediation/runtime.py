@@ -42,6 +42,7 @@ from signalforge.core.config import (
     get_tracing_settings,
 )
 from signalforge.db.errors import DatabaseTransportError
+from signalforge.incidents import models as incident_models  # noqa: F401
 from signalforge.observability.exposition import MetricsHttpServer
 from signalforge.observability.logging import (
     bind_log_context,
@@ -74,6 +75,7 @@ from signalforge.remediation.execution import (
     HttpRestartServiceAdapter,
     RemediationExecutor,
 )
+from signalforge.users import models as user_models  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
