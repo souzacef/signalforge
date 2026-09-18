@@ -311,7 +311,15 @@ async def test_worker_startup_rejects_empty_allowlist_before_resources(
         RemediationWorkerConfigurationError,
         match="non-empty restart endpoint allowlist",
     ):
-        await run_worker(settings(), RemediationExecutionSettings())
+        await run_worker(
+            settings(),
+            RemediationExecutionSettings(
+                _env_file=None,
+                restart_endpoints={},
+                request_timeout_seconds=0.01,
+                attempt_lease_seconds=0.02,
+            ),
+        )
 
 
 def test_worker_startup_requires_drain_longer_than_http_timeout() -> None:

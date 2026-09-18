@@ -11,7 +11,7 @@ def test_disabled_default_requires_no_endpoint(monkeypatch: pytest.MonkeyPatch) 
         "SIGNALFORGE_TRACING_SAMPLE_RATIO",
     ):
         monkeypatch.delenv(name, raising=False)
-    settings = TracingSettings()
+    settings = TracingSettings(_env_file=None)
     assert settings.tracing_enabled is False
     assert settings.otlp_traces_endpoint is None
     assert settings.tracing_sample_ratio == 1.0
@@ -19,7 +19,7 @@ def test_disabled_default_requires_no_endpoint(monkeypatch: pytest.MonkeyPatch) 
 
 def test_enabled_requires_endpoint() -> None:
     with pytest.raises(ValidationError, match="otlp_traces_endpoint"):
-        TracingSettings(tracing_enabled=True)
+        TracingSettings(_env_file=None, tracing_enabled=True)
 
 
 @pytest.mark.parametrize(
@@ -27,16 +27,18 @@ def test_enabled_requires_endpoint() -> None:
 )
 def test_invalid_endpoint_is_rejected(endpoint: str) -> None:
     with pytest.raises(ValidationError):
-        TracingSettings(tracing_enabled=True, otlp_traces_endpoint=endpoint)
+        TracingSettings(
+            _env_file=None, tracing_enabled=True, otlp_traces_endpoint=endpoint
+        )
 
 
 @pytest.mark.parametrize("ratio", [0.0, 1.0])
 def test_sampling_boundaries_are_accepted(ratio: float) -> None:
-    settings = TracingSettings(tracing_sample_ratio=ratio)
+    settings = TracingSettings(_env_file=None, tracing_sample_ratio=ratio)
     assert settings.tracing_sample_ratio == ratio
 
 
 @pytest.mark.parametrize("ratio", [-0.01, 1.01, "nan", "inf"])
 def test_invalid_sample_ratios_are_rejected(ratio: float | str) -> None:
     with pytest.raises(ValidationError):
-        TracingSettings(tracing_sample_ratio=ratio)
+        TracingSettings(_env_file=None, tracing_sample_ratio=ratio)
