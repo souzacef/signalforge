@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import subprocess
+import sys
 from collections import deque
 from typing import Any, cast
 from uuid import uuid4
@@ -1394,4 +1396,25 @@ async def test_tracing_cleanup_failure_does_not_hide_worker_error(
     assert any(
         getattr(record, "exception_type", None) == "RuntimeError"
         for record in caplog.records
+    )
+
+
+def test_runtime_registers_remediation_foreign_key_targets_in_fresh_process() -> None:
+    script = """
+from signalforge.db.base import Base
+import signalforge.remediation.runtime  # noqa: F401
+
+assert "incidents" in Base.metadata.tables
+assert "users" in Base.metadata.tables
+
+for table in Base.metadata.tables.values():
+    for foreign_key in table.foreign_keys:
+        foreign_key.column
+"""
+
+    subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
     )
